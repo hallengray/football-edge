@@ -10,12 +10,13 @@ dependencies = [
     "requests>=2.32",
     "python-dotenv>=1.0",
     "supabase>=2.10",
-    "sports-betting>=0.6",
+    "sports-betting==0.12.1",
 ]
 
 [dependency-groups]
 dev = [
     "ruff>=0.8",
+    "pytest>=8.0",
 ]
 
 [tool.ruff]
