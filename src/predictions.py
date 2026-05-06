@@ -1,23 +1,36 @@
 """Model loading and prediction wrapper.
 
-Wraps the `sports-betting` library (https://github.com/georgedouzas/sports-betting)
-to produce match outcome probabilities.
+Wraps a `sports-betting` library multi-output ClassifierBettor and the primed
+SoccerDataLoader needed for inference. Falls back to demo mode (synthetic
+probabilities) when artifacts are missing or inference fails.
 
-Includes a **demo mode** that runs when no trained model exists, so the
-dashboard works end-to-end before you invest time in training. Demo
-probabilities are derived from a simple home-advantage heuristic plus
-small randomness — they're NOT predictive, just plausible-shaped data
-to test the pipeline.
+Three artifacts are loaded together:
+    models/epl_bettor.pkl   — the fitted ClassifierBettor
+    models/epl_loader.pkl   — the SoccerDataLoader, primed by extract_train_data
+    models/backtest.json    — per-market backtest summary (for the dashboard)
+
+If any artifact is missing or unloadable, the entire Models container reports
+is_ready=False and the dashboard falls back to demo predictions.
 """
+
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import pickle
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-MODEL_PATH = Path(__file__).parent.parent / "models" / "epl_model.pkl"
+import pandas as pd
+
+logger = logging.getLogger(__name__)
+
+MODELS_DIR = Path(__file__).parent.parent / "models"
+BETTOR_PATH = MODELS_DIR / "epl_bettor.pkl"
+LOADER_PATH = MODELS_DIR / "epl_loader.pkl"
+BACKTEST_PATH = MODELS_DIR / "backtest.json"
 
 
 @dataclass
@@ -33,59 +46,69 @@ class MatchPrediction:
     is_demo: bool = False
 
 
-def model_exists() -> bool:
-    """Whether a trained model is available on disk."""
-    return MODEL_PATH.exists()
+@dataclass
+class Models:
+    """Container for the three artifacts plus session-cached fixtures DataFrame."""
+
+    bettor: Any | None
+    loader: Any | None
+    backtest: dict | None
+    fixtures_df: pd.DataFrame | None = field(default=None)
+
+    @property
+    def is_ready(self) -> bool:
+        """True when all three inference artifacts are loaded."""
+        return self.bettor is not None and self.loader is not None and self.backtest is not None
 
 
-def load_model() -> Any | None:
-    """Load the trained model from disk, or return None if not available."""
-    if not MODEL_PATH.exists():
+def load_models() -> Models:
+    """Load all three artifacts. Any missing or corrupt → demo mode (is_ready=False)."""
+    bettor = _safe_unpickle(BETTOR_PATH)
+    loader = _safe_unpickle(LOADER_PATH)
+    backtest_data = _safe_load_json(BACKTEST_PATH)
+    return Models(bettor=bettor, loader=loader, backtest=backtest_data)
+
+
+def _safe_unpickle(path: Path) -> Any | None:
+    if not path.exists():
         return None
-    with open(MODEL_PATH, "rb") as f:
-        return pickle.load(f)
+    try:
+        with path.open("rb") as f:
+            return pickle.load(f)
+    except Exception as e:  # pickle errors, version skew, anything
+        logger.warning(f"Could not load pickle {path}: {e}")
+        return None
+
+
+def _safe_load_json(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:  # JSON syntax errors, encoding issues, anything
+        logger.warning(f"Could not load JSON {path}: {e}")
+        return None
 
 
 def predict_fixture(
-    model: Any | None,
+    models: Models | None,
     home_team: str,
     away_team: str,
 ) -> MatchPrediction:
     """Get probabilities for an upcoming fixture.
 
-    If `model` is None, falls back to demo mode so the dashboard stays usable.
-
-    Args:
-        model: Trained sports-betting model, or None for demo mode.
-        home_team: Home team name (must match training-data convention).
-        away_team: Away team name.
-
-    Returns:
-        A MatchPrediction with probabilities summing to ~1.
+    Until Task 6, this function only returns demo predictions. The real-model
+    inference branch is wired in the next commit; the structure below is intentionally
+    left in three explicit branches so Task 6's diff is minimal.
     """
-    if model is None:
+    if not isinstance(models, Models):
+        # Legacy code path (removed in Task 10 alongside app.py changes)
         return _demo_prediction(home_team, away_team)
-
-    # TODO: replace with the real sports-betting model call once trained.
-    # The library's bettor objects expose `.predict()` / `.predict_proba()`,
-    # but the input shape depends on how you configured the DataLoader.
-    # See https://georgedouzas.github.io/sports-betting/ for the API.
-    #
-    # Typical pattern:
-    #   features = build_features(home_team, away_team, recent_data)
-    #   probs = model.predict_proba(features)
-    #   return MatchPrediction(
-    #       home_team=home_team,
-    #       away_team=away_team,
-    #       p_home=probs[0],
-    #       p_draw=probs[1],
-    #       p_away=probs[2],
-    #   )
-
-    raise NotImplementedError(
-        "Wire this up to your trained sports-betting model. "
-        "See module docstring for guidance."
-    )
+    if not models.is_ready:
+        return _demo_prediction(home_team, away_team)
+    # Real-model branch wired in Task 6
+    return _demo_prediction(home_team, away_team)
 
 
 def _demo_prediction(home_team: str, away_team: str) -> MatchPrediction:
@@ -97,17 +120,15 @@ def _demo_prediction(home_team: str, away_team: str) -> MatchPrediction:
     seed_str = f"{home_team}|{away_team}"
     h = int(hashlib.md5(seed_str.encode()).hexdigest(), 16)
 
-    # Pseudo-random splits with home advantage
-    home_bias = (h % 100) / 100.0  # 0.0 to 0.99
-    p_home = 0.35 + home_bias * 0.25  # 0.35 to 0.60
-    p_draw = 0.20 + ((h >> 8) % 100) / 1000.0  # ~0.20 to 0.30
+    home_bias = (h % 100) / 100.0
+    p_home = 0.35 + home_bias * 0.25
+    p_draw = 0.20 + ((h >> 8) % 100) / 1000.0
     p_away = max(1.0 - p_home - p_draw, 0.10)
 
-    # Renormalize
     total = p_home + p_draw + p_away
     p_home, p_draw, p_away = p_home / total, p_draw / total, p_away / total
 
-    p_over_2_5 = 0.45 + ((h >> 16) % 100) / 250.0  # ~0.45 to 0.85
+    p_over_2_5 = 0.45 + ((h >> 16) % 100) / 250.0
 
     return MatchPrediction(
         home_team=home_team,
@@ -118,3 +139,16 @@ def _demo_prediction(home_team: str, away_team: str) -> MatchPrediction:
         p_over_2_5=p_over_2_5,
         is_demo=True,
     )
+
+
+# ─── Compatibility shims (removed in Task 10 alongside app.py changes) ───
+
+
+def model_exists() -> bool:
+    """Deprecated: use Models.is_ready via load_models()."""
+    return BETTOR_PATH.exists() and LOADER_PATH.exists() and BACKTEST_PATH.exists()
+
+
+def load_model() -> Any | None:
+    """Deprecated: use load_models()."""
+    return _safe_unpickle(BETTOR_PATH)
