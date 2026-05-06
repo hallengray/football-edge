@@ -273,3 +273,173 @@ def _add_xg_features(df: pd.DataFrame, window: int = WINDOW_DEFAULT) -> pd.DataF
 
     df = df.join(home).join(away)
     return df
+
+
+LEAGUE_SIZE_DEFAULT: dict[str, int] = {
+    "England": 20,
+    "Spain": 20,
+    "Italy": 20,
+    "Germany": 18,
+    "France": 18,
+}
+
+
+def _normalise_team_names(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert football-data team names to canonical form.
+
+    Drops rows where either team is unmapped (with a logged warning naming
+    the unmapped team -- the caller adds it to src/team_names.REGISTRY and re-runs).
+    """
+    from src.team_names import to_canonical
+
+    df = df.copy()
+    keep_idx: list[int] = []
+    for idx, row in df.iterrows():
+        try:
+            row["home_team"] = to_canonical(row["home_team"], source="football_data")
+            row["away_team"] = to_canonical(row["away_team"], source="football_data")
+            df.at[idx, "home_team"] = row["home_team"]
+            df.at[idx, "away_team"] = row["away_team"]
+            keep_idx.append(idx)
+        except KeyError:
+            # Will be re-raised by the caller (training script) once verification
+            # is added; here we let it propagate so unmapped teams don't silently drop.
+            raise
+    return df.loc[keep_idx].reset_index(drop=True)
+
+
+def _add_strength_of_schedule(df: pd.DataFrame, window: int = WINDOW_DEFAULT) -> pd.DataFrame:
+    """Add `home_opp_strength_last_5`, `away_opp_strength_last_5`.
+
+    Strength = average prior-season league position of the team's last `window`
+    opponents. We approximate prior-season position from a rolling computation
+    of points-per-game across all matches a team played in the previous year:
+    teams with higher PPG get lower (better) position numbers.
+
+    Promoted teams (no prior-year data) get league_size - 2 (relegation-adjacent).
+    """
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values(["league", "year", "date"]).reset_index(drop=True)
+
+    # Compute prior-season PPG per team. If FTHG/FTAG aren't in the input
+    # (e.g. when scoring upcoming fixtures or a degenerate test), skip this step
+    # and let every team fall back to the promoted-team default below.
+    points_table = []
+    has_results = "FTHG" in df.columns and "FTAG" in df.columns
+    if has_results:
+        for (league, year), group in df.groupby(["league", "year"]):
+            teams: dict[str, int] = {}
+            games: dict[str, int] = {}
+            for _, m in group.iterrows():
+                for team_col, scored_col, conceded_col in [
+                    ("home_team", "FTHG", "FTAG"),
+                    ("away_team", "FTAG", "FTHG"),
+                ]:
+                    team = m[team_col]
+                    teams.setdefault(team, 0)
+                    games.setdefault(team, 0)
+                    games[team] += 1
+                    if m[scored_col] > m[conceded_col]:
+                        teams[team] += 3
+                    elif m[scored_col] == m[conceded_col]:
+                        teams[team] += 1
+            for team, pts in teams.items():
+                ppg = pts / games[team] if games[team] else 0
+                points_table.append({"league": league, "year": year, "team": team, "ppg": ppg})
+
+    ppg_df = pd.DataFrame(points_table)
+
+    # Convert PPG to "position" -- rank within league-year, descending
+    # (higher PPG = lower number = better)
+    if not ppg_df.empty:
+        ppg_df["position"] = (
+            ppg_df.groupby(["league", "year"])["ppg"]
+            .rank(method="min", ascending=False)
+            .astype(int)
+        )
+        # Use prior season's position to score current season's matches
+        ppg_df["next_year"] = ppg_df["year"] + 1
+    else:
+        ppg_df["position"] = []
+        ppg_df["next_year"] = []
+
+    def _opp_position(league: str, year: int, team: str) -> float:
+        if ppg_df.empty:
+            return float(LEAGUE_SIZE_DEFAULT.get(league, 20) - 2)
+        match = ppg_df[
+            (ppg_df["league"] == league) & (ppg_df["next_year"] == year) & (ppg_df["team"] == team)
+        ]
+        if match.empty:
+            return float(LEAGUE_SIZE_DEFAULT.get(league, 20) - 2)
+        return float(match["position"].iloc[0])
+
+    # Long-form view of opponents
+    long_home = df[["date", "home_team", "away_team", "league", "year"]].copy()
+    long_home["team"] = long_home["home_team"]
+    long_home["opponent"] = long_home["away_team"]
+    long_home["match_id"] = long_home.index
+    long_home["side"] = "home"
+
+    long_away = df[["date", "home_team", "away_team", "league", "year"]].copy()
+    long_away["team"] = long_away["away_team"]
+    long_away["opponent"] = long_away["home_team"]
+    long_away["match_id"] = long_away.index
+    long_away["side"] = "away"
+
+    long = pd.concat([long_home, long_away], ignore_index=True)
+    long = long.sort_values(["team", "date"]).reset_index(drop=True)
+
+    long["opp_pos"] = long.apply(
+        lambda r: _opp_position(r["league"], r["year"], r["opponent"]),
+        axis=1,
+    )
+
+    grouped = long.groupby("team", group_keys=False)
+    long["opp_strength"] = grouped["opp_pos"].apply(
+        lambda s: s.shift(1).rolling(window, min_periods=1).mean()
+    )
+
+    home = (
+        long[long["side"] == "home"]
+        .set_index("match_id")[["opp_strength"]]
+        .rename(columns={"opp_strength": "home_opp_strength_last_5"})
+    )
+    away = (
+        long[long["side"] == "away"]
+        .set_index("match_id")[["opp_strength"]]
+        .rename(columns={"opp_strength": "away_opp_strength_last_5"})
+    )
+
+    # First-match defaults (no prior data -> league-size-2)
+    home["home_opp_strength_last_5"] = home["home_opp_strength_last_5"].fillna(
+        df["league"].map(LEAGUE_SIZE_DEFAULT).fillna(20) - 2
+    )
+    away["away_opp_strength_last_5"] = away["away_opp_strength_last_5"].fillna(
+        df["league"].map(LEAGUE_SIZE_DEFAULT).fillna(20) - 2
+    )
+
+    df = df.join(home).join(away)
+    return df
+
+
+def compute_features(matches_df: pd.DataFrame, xg_df: pd.DataFrame) -> pd.DataFrame:
+    """Top-level: returns matches_df with engineered feature columns added.
+
+    Pipeline order:
+        1. Normalise team names (football-data -> canonical)
+        2. Merge xG by (date, home_team, away_team)
+        3. Rest features
+        4. Form features (last 5 W/D/L)
+        5. Rolling goals (last 5 scored/conceded)
+        6. xG features (last 5 xG/xGA + over/underperformance)
+        7. Strength of schedule (last 5 opponents' prior-season position)
+    """
+    df = _normalise_team_names(matches_df)
+    df = _merge_xg(df, xg_df)
+    df = _add_rest_features(df)
+    df = _add_form_features(df, window=WINDOW_DEFAULT)
+    df = _add_rolling_goals(df, window=WINDOW_DEFAULT)
+    df = _add_xg_features(df, window=WINDOW_DEFAULT)
+    df = _add_strength_of_schedule(df, window=WINDOW_DEFAULT)
+    return df
