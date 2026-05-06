@@ -1,15 +1,15 @@
-"""Train the EPL multi-output ClassifierBettor and save it to disk.
+"""Train the Big-5 multi-output ClassifierBettor and save artifacts atomically.
 
-Single command produces three artifacts in models/:
-    epl_bettor.pkl    — fitted ClassifierBettor (handles 5 markets)
-    epl_loader.pkl    — primed SoccerDataLoader (needed at inference time
-                        for extract_fixtures_data())
-    backtest.json     — per-market backtest summary
+Single command produces seven artifacts in models/:
+    epl_bettor.pkl, laliga_bettor.pkl, seriea_bettor.pkl,
+    bundesliga_bettor.pkl, ligue1_bettor.pkl  -- one fitted classifier per league
+    fixtures_data.parquet                     -- pre-computed feature DataFrame for upcoming fixtures
+    backtest.json                             -- per-league per-market backtest summary
 
 Usage:
     uv run python scripts/train_model.py
 
-Run time: typically 10-20 minutes on a laptop. Existing artifacts are only
+Run time: typically 30-50 minutes on a laptop. Existing artifacts are only
 overwritten if the entire run succeeds (atomic write).
 """
 
@@ -17,62 +17,162 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 import os
 import pickle
 import sys
+from collections.abc import Callable
+from importlib.metadata import version as pkg_version
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
+from sklearn.model_selection import TimeSeriesSplit
 
-ROOT = Path(__file__).parent.parent
+logger = logging.getLogger(__name__)
+
+ROOT = Path(__file__).resolve().parent.parent
 # Make project root importable so `from src.foo import ...` works when this
-# script is run directly (`python scripts/train_model.py`). Streamlit/pytest
-# do this automatically; CLI entry-points need to do it explicitly.
+# script is run directly. Streamlit/pytest do this automatically; CLI entry-points
+# need to do it explicitly.
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 MODELS_DIR = ROOT / "models"
-BETTOR_PATH = MODELS_DIR / "epl_bettor.pkl"
-LOADER_PATH = MODELS_DIR / "epl_loader.pkl"
-BACKTEST_PATH = MODELS_DIR / "backtest.json"
+
+BIG_5_LEAGUES: list[str] = ["epl", "laliga", "seriea", "bundesliga", "ligue1"]
+
+# Per-league bettor pickle paths
+BETTOR_PATHS: dict[str, Path] = {
+    league: MODELS_DIR / f"{league}_bettor.pkl" for league in BIG_5_LEAGUES
+}
+FIXTURES_PATH: Path = MODELS_DIR / "fixtures_data.parquet"
+BACKTEST_PATH: Path = MODELS_DIR / "backtest.json"
+
+# Mapping from internal league key -> football-data.co.uk capitalised league name
+LEAGUE_TO_FOOTBALL_DATA: dict[str, str] = {
+    "epl": "England",
+    "laliga": "Spain",
+    "seriea": "Italy",
+    "bundesliga": "Germany",
+    "ligue1": "France",
+}
+# Mapping from internal league key -> Understat slug
+LEAGUE_TO_UNDERSTAT: dict[str, str] = {
+    "epl": "EPL",
+    "laliga": "La_liga",
+    "seriea": "Serie_A",
+    "bundesliga": "Bundesliga",
+    "ligue1": "Ligue_1",
+}
+
+
+# ─── Backtest CV ────────────────────────────────────────────────────
+
+
+def _strip_market_suffix(col: str) -> str:
+    """`output__home_win__full_time_goals` -> `home_win`."""
+    parts = col.split("__")
+    if len(parts) >= 3:
+        return parts[1]
+    return col
+
+
+def run_backtest_cv(
+    bettor_factory: Callable[[], Any],
+    X: pd.DataFrame,
+    Y: pd.DataFrame,
+    O: pd.DataFrame,  # noqa: E741 — capital O matches library convention
+    *,
+    n_splits: int = 5,
+    value_threshold: float = 0.05,
+) -> dict:
+    """Run TimeSeriesSplit cross-validation; return per-market yield summary.
+
+    For each fold, fit a fresh bettor on train, predict on test, select bets where
+    `model_prob * decimal_odds > 1 + value_threshold`, accumulate returns.
+    Yield per market = mean of returns across all folds' selected bets.
+    """
+    tscv = TimeSeriesSplit(n_splits=n_splits)
+    market_keys = [_strip_market_suffix(col) for col in Y.columns]
+    bets_per_market: dict[str, list[float]] = {key: [] for key in market_keys}
+
+    for train_idx, test_idx in tscv.split(X):
+        if len(test_idx) == 0:
+            continue
+        bettor = bettor_factory()
+        bettor.fit(X.iloc[train_idx], Y.iloc[train_idx])
+
+        # MultiOutputClassifier returns a list (one array per market)
+        probs_per_market = bettor.predict_proba(X.iloc[test_idx])
+
+        for market_idx, market_col in enumerate(Y.columns):
+            market_key = market_keys[market_idx]
+            test_outcomes = Y.iloc[test_idx][market_col].to_numpy()
+            test_odds = O.iloc[test_idx][market_col].to_numpy()
+            test_probs = probs_per_market[market_idx][:, 1]
+
+            value_mask = test_probs * test_odds > 1 + value_threshold
+            returns = np.where(value_mask, test_odds * test_outcomes - 1, 0.0)
+            bets_per_market[market_key].extend([float(r) for r in returns[returns != 0]])
+
+    summary_markets: dict[str, dict[str, float]] = {}
+    for market_key, returns in bets_per_market.items():
+        if not returns:
+            summary_markets[market_key] = {"n_bets": 0, "yield_pct": 0.0}
+        else:
+            summary_markets[market_key] = {
+                "n_bets": len(returns),
+                "yield_pct": round(100 * float(np.mean(returns)), 2),
+            }
+
+    return {
+        "n_matches": len(X),
+        "markets": summary_markets,
+    }
+
+
+# ─── Atomic write ──────────────────────────────────────────────────
 
 
 def write_artifacts_atomically(
-    bettor: Any,
-    loader: Any,
+    bettors: dict[str, Any],
+    fixtures_df: pd.DataFrame,
     summary: dict,
 ) -> None:
-    """Write all three artifacts to .tmp paths, then os.replace to final names.
+    """Write all 7 artifacts to .tmp paths, then os.replace them to final paths.
 
-    All three writes are staged to .tmp paths first; if any write fails, cleanup
-    runs and none are promoted. The three os.replace calls are sequential, so a
-    hard crash (power cut, OS kill) BETWEEN them could in theory leave a partial
-    final state — vanishingly unlikely on a single-user local tool, but worth
-    knowing. Cleans up orphaned .tmp files on any failure.
+    Either all 7 land at their final paths, or none do. Cleans up .tmp files
+    on any failure. The five bettor pickles, the fixtures parquet, and the
+    backtest JSON are promoted in one final pass.
     """
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-    bettor_tmp = BETTOR_PATH.with_suffix(BETTOR_PATH.suffix + ".tmp")
-    loader_tmp = LOADER_PATH.with_suffix(LOADER_PATH.suffix + ".tmp")
+    bettor_tmps = {
+        league: BETTOR_PATHS[league].with_suffix(BETTOR_PATHS[league].suffix + ".tmp")
+        for league in BIG_5_LEAGUES
+    }
+    fixtures_tmp = FIXTURES_PATH.with_suffix(FIXTURES_PATH.suffix + ".tmp")
     backtest_tmp = BACKTEST_PATH.with_suffix(BACKTEST_PATH.suffix + ".tmp")
-    tmps = [bettor_tmp, loader_tmp, backtest_tmp]
+    all_tmps = list(bettor_tmps.values()) + [fixtures_tmp, backtest_tmp]
 
     try:
-        with bettor_tmp.open("wb") as f:
-            pickle.dump(bettor, f)
-        with loader_tmp.open("wb") as f:
-            pickle.dump(loader, f)
+        # 1. Write all temps
+        for league, bettor in bettors.items():
+            with bettor_tmps[league].open("wb") as f:
+                pickle.dump(bettor, f)
+        fixtures_df.to_parquet(fixtures_tmp, index=False)
         with backtest_tmp.open("w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)
 
-        # All temp writes succeeded — promote atomically
-        os.replace(bettor_tmp, BETTOR_PATH)
-        os.replace(loader_tmp, LOADER_PATH)
+        # 2. All temp writes succeeded -- promote atomically
+        for league in BIG_5_LEAGUES:
+            os.replace(bettor_tmps[league], BETTOR_PATHS[league])
+        os.replace(fixtures_tmp, FIXTURES_PATH)
         os.replace(backtest_tmp, BACKTEST_PATH)
     except BaseException:
-        # Clean up any temp files left behind (don't mask the original exception)
-        for tmp in tmps:
+        for tmp in all_tmps:
             try:
                 if tmp.exists():
                     tmp.unlink()
@@ -81,158 +181,12 @@ def write_artifacts_atomically(
         raise
 
 
-def run_backtest(
-    bettor,
-    X,
-    Y,
-    O,  # noqa: E741 — capital O matches library convention
-    *,
-    training_years: list[int],
-) -> dict:
-    """Run library backtest and reduce per-market columns into a JSON-ready summary.
-
-    Library's `backtest()` returns a DataFrame indexed by training-window start date
-    with two per-market columns per market:
-        Number of bets (home_win__full_time_goals)
-        Yield percentage per bet (home_win__full_time_goals)
-
-    We aggregate those across rows to produce one summary block per market. Note:
-    sports-betting v0.12.1 does NOT expose per-market win rate; only n_bets and
-    yield are surfaced. Yield is the meaningful P&L metric for paper-trading.
-
-    The caller must pass `training_years` (the list of seasons used by the
-    SoccerDataLoader) explicitly so that backtest.json reports the actual seasons,
-    not a hardcoded list.
-    """
-    from importlib.metadata import version as pkg_version
-
-    from sportsbet.evaluation import backtest as library_backtest
-
-    bt_df: pd.DataFrame = library_backtest(bettor, X, Y, O)
-    library_version = pkg_version("sports-betting")
-
-    markets = ["home_win", "draw", "away_win", "over_2.5", "under_2.5"]
-    market_summary: dict[str, dict[str, float]] = {}
-
-    for m in markets:
-        col_market = f"{m}__full_time_goals"
-        n_bets_col = f"Number of bets ({col_market})"
-        yield_col = f"Yield percentage per bet ({col_market})"
-
-        # Library v0.12.1 only exposes per-market `Number of bets` and `Yield percentage
-        # per bet`; there is no per-market win-rate column. Yield captures what matters
-        # for paper-trading (P&L per bet); deriving win rate would require breaking
-        # into the library's CV internals, which isn't worth it.
-        if n_bets_col not in bt_df.columns:
-            print(
-                f"[warn] backtest column not found for market {m!r} "
-                f"(expected '{n_bets_col}'); recording zeros. "
-                f"Library naming may have changed.",
-                file=sys.stderr,
-            )
-            market_summary[m] = {"n_bets": 0, "yield_pct": 0.0}
-            continue
-
-        total_bets = int(bt_df[n_bets_col].sum())
-        if total_bets > 0:
-            weighted_yield = (bt_df[yield_col] * bt_df[n_bets_col]).sum() / total_bets
-        else:
-            weighted_yield = 0.0
-
-        market_summary[m] = {
-            "n_bets": total_bets,
-            "yield_pct": float(weighted_yield),
-        }
-
-    return {
-        "trained_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
-        "training_seasons": list(training_years),
-        "library_version": library_version,
-        "n_training_matches": int(len(X)),
-        "y_columns_order": list(Y.columns),  # locked for inference index mapping
-        "markets": market_summary,
-    }
-
-
 def main() -> None:
-    """Train the multi-output bettor end-to-end and persist artifacts."""
-    print("⚽ Football Edge — training EPL multi-output bettor")
-    print("=" * 60)
+    raise NotImplementedError("Implemented in Task 11")
 
-    # Library imports here (not at top) so import errors are reported with context
-    from sklearn.calibration import CalibratedClassifierCV
-    from sklearn.compose import make_column_transformer
-    from sklearn.ensemble import GradientBoostingClassifier
-    from sklearn.impute import SimpleImputer
-    from sklearn.multioutput import MultiOutputClassifier
-    from sklearn.pipeline import make_pipeline
-    from sklearn.preprocessing import OneHotEncoder
 
-    from sportsbet.datasets import SoccerDataLoader
-    from sportsbet.evaluation import ClassifierBettor
-
-    from src.sportsbet_patch import apply_patch
-
-    # Patch the library's broken GitHub-scraping discovery before any loader call.
-    apply_patch()
-
-    # Single source of truth for the season range — also passed to run_backtest below
-    training_years = list(range(2018, 2026))
-
-    # 1. Load historical EPL data
-    print("\n[1/4] Loading historical data (2018-2025) — this hits the network...")
-    loader = SoccerDataLoader(
-        param_grid={
-            "league": ["England"],
-            "year": training_years,
-            "division": [1],
-        }
-    )
-    X, Y, O = loader.extract_train_data(  # noqa: E741
-        odds_type="market_average",
-        drop_na_thres=1.0,
-    )
-    print(f"  Loaded {len(X)} matches.")
-    print(f"  Y.columns order: {list(Y.columns)}")
-
-    # 2. Build the calibrated multi-output pipeline
-    print("\n[2/4] Building pipeline...")
-    pipeline = make_pipeline(
-        make_column_transformer(
-            (
-                OneHotEncoder(handle_unknown="ignore"),
-                ["league", "home_team", "away_team"],
-            ),
-            remainder="passthrough",
-        ),
-        SimpleImputer(),
-        MultiOutputClassifier(
-            CalibratedClassifierCV(
-                GradientBoostingClassifier(random_state=0),
-                method="isotonic",
-                cv=3,
-            )
-        ),
-    )
-    bettor = ClassifierBettor(classifier=pipeline)
-
-    # 3. Fit + backtest
-    print("\n[3/4] Fitting bettor and running backtest (this is the slow bit, ~10-15 min)...")
-    bettor.fit(X, Y, O)
-    summary = run_backtest(bettor, X, Y, O, training_years=training_years)
-
-    # 4. Atomic persist
-    print("\n[4/4] Persisting artifacts...")
-    write_artifacts_atomically(bettor, loader, summary)
-
-    print("\n✅ Done. Artifacts written to:")
-    print(f"     {BETTOR_PATH}")
-    print(f"     {LOADER_PATH}")
-    print(f"     {BACKTEST_PATH}")
-    print("\nPer-market backtest summary:")
-    for market, stats in summary["markets"].items():
-        print(f"  {market:<12} {stats['n_bets']:>4} bets  yield {stats['yield_pct']:+.2f}%")
-    print()
+# Re-export imports used by main() (kept here so import order is stable)
+_ = (dt, pkg_version, logger)
 
 
 if __name__ == "__main__":
