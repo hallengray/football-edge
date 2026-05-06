@@ -142,7 +142,83 @@ def run_backtest(
 
 
 def main() -> None:
-    raise NotImplementedError("Implemented in Task 9")
+    """Train the multi-output bettor end-to-end and persist artifacts."""
+    print("⚽ Football Edge — training EPL multi-output bettor")
+    print("=" * 60)
+
+    # Library imports here (not at top) so import errors are reported with context
+    from sklearn.calibration import CalibratedClassifierCV
+    from sklearn.compose import make_column_transformer
+    from sklearn.ensemble import GradientBoostingClassifier
+    from sklearn.impute import SimpleImputer
+    from sklearn.multioutput import MultiOutputClassifier
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import OneHotEncoder
+
+    from sportsbet.datasets import SoccerDataLoader
+    from sportsbet.evaluation import ClassifierBettor
+
+    # Single source of truth for the season range — also passed to run_backtest below
+    training_years = list(range(2018, 2026))
+
+    # 1. Load historical EPL data
+    print("\n[1/4] Loading historical data (2018-2025) — this hits the network...")
+    loader = SoccerDataLoader(
+        param_grid={
+            "league": ["England"],
+            "year": training_years,
+            "division": [1],
+        }
+    )
+    X, Y, O = loader.extract_train_data(  # noqa: E741
+        odds_type="market_average",
+        drop_na_thres=1.0,
+    )
+    print(f"  Loaded {len(X)} matches.")
+    print(f"  Y.columns order: {list(Y.columns)}")
+
+    # 2. Build the calibrated multi-output pipeline
+    print("\n[2/4] Building pipeline...")
+    pipeline = make_pipeline(
+        make_column_transformer(
+            (
+                OneHotEncoder(handle_unknown="ignore"),
+                ["league", "home_team", "away_team"],
+            ),
+            remainder="passthrough",
+        ),
+        SimpleImputer(),
+        MultiOutputClassifier(
+            CalibratedClassifierCV(
+                GradientBoostingClassifier(random_state=0),
+                method="isotonic",
+                cv=3,
+            )
+        ),
+    )
+    bettor = ClassifierBettor(classifier=pipeline)
+
+    # 3. Fit + backtest
+    print("\n[3/4] Fitting bettor and running backtest (this is the slow bit, ~10-15 min)...")
+    bettor.fit(X, Y, O)
+    summary = run_backtest(bettor, X, Y, O, training_years=training_years)
+
+    # 4. Atomic persist
+    print("\n[4/4] Persisting artifacts...")
+    write_artifacts_atomically(bettor, loader, summary)
+
+    print("\n✅ Done. Artifacts written to:")
+    print(f"     {BETTOR_PATH}")
+    print(f"     {LOADER_PATH}")
+    print(f"     {BACKTEST_PATH}")
+    print("\nPer-market backtest summary:")
+    for market, stats in summary["markets"].items():
+        print(
+            f"  {market:<12} {stats['n_bets']:>4} bets  "
+            f"win-rate {stats['win_rate'] * 100:>5.1f}%  "
+            f"yield {stats['yield_pct']:+.2f}%"
+        )
+    print()
 
 
 if __name__ == "__main__":
