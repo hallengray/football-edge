@@ -72,3 +72,68 @@ def _add_rest_features(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df.join(home).join(away)
     return df
+
+
+def _add_form_features(df: pd.DataFrame, window: int = WINDOW_DEFAULT) -> pd.DataFrame:
+    """Add `home_form_{wins,draws,losses}` and `away_form_{wins,draws,losses}`.
+
+    Counts results in the team's last `window` matches BEFORE the current match,
+    across both home and away appearances. A team's first match gets all zeros.
+    """
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date").reset_index(drop=True)
+
+    # Build long-form view, computing this match's outcome from the team's perspective
+    long_home = df[["date", "home_team", "FTHG", "FTAG"]].copy()
+    long_home["team"] = long_home["home_team"]
+    long_home["match_id"] = long_home.index
+    long_home["side"] = "home"
+    long_home["team_goals"] = long_home["FTHG"]
+    long_home["opp_goals"] = long_home["FTAG"]
+
+    long_away = df[["date", "away_team", "FTHG", "FTAG"]].copy()
+    long_away["team"] = long_away["away_team"]
+    long_away["match_id"] = long_away.index
+    long_away["side"] = "away"
+    long_away["team_goals"] = long_away["FTAG"]
+    long_away["opp_goals"] = long_away["FTHG"]
+
+    long = pd.concat([long_home, long_away], ignore_index=True)
+    long = long.sort_values(["team", "date"]).reset_index(drop=True)
+
+    long["is_win"] = (long["team_goals"] > long["opp_goals"]).astype(int)
+    long["is_draw"] = (long["team_goals"] == long["opp_goals"]).astype(int)
+    long["is_loss"] = (long["team_goals"] < long["opp_goals"]).astype(int)
+
+    # Rolling sum of last `window` matches, EXCLUDING the current match
+    grouped = long.groupby("team", group_keys=False)
+    long["form_wins"] = (
+        grouped["is_win"].apply(lambda s: s.shift(1).rolling(window, min_periods=1).sum()).fillna(0)
+    )
+    long["form_draws"] = (
+        grouped["is_draw"]
+        .apply(lambda s: s.shift(1).rolling(window, min_periods=1).sum())
+        .fillna(0)
+    )
+    long["form_losses"] = (
+        grouped["is_loss"]
+        .apply(lambda s: s.shift(1).rolling(window, min_periods=1).sum())
+        .fillna(0)
+    )
+
+    home = (
+        long[long["side"] == "home"]
+        .set_index("match_id")[["form_wins", "form_draws", "form_losses"]]
+        .add_prefix("home_")
+        .astype(int)
+    )
+    away = (
+        long[long["side"] == "away"]
+        .set_index("match_id")[["form_wins", "form_draws", "form_losses"]]
+        .add_prefix("away_")
+        .astype(int)
+    )
+
+    df = df.join(home).join(away)
+    return df

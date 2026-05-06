@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.features import _add_rest_features
+from src.features import _add_form_features, _add_rest_features
 
 
 def test_add_rest_features_first_match_uses_default() -> None:
@@ -50,3 +50,50 @@ def test_add_rest_features_caps_at_14_days() -> None:
     )
     out = _add_rest_features(df)
     assert out.loc[1, "home_rest_days"] == 14
+
+
+# ─── Form tests ──────────────────────────────────────────────────
+
+
+def test_form_features_counts_wins_draws_losses() -> None:
+    """Arsenal plays: W, D, L, W, W. The 6th match (any) should show form 3-1-1."""
+    df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                [
+                    "2024-08-01",
+                    "2024-08-08",
+                    "2024-08-15",
+                    "2024-08-22",
+                    "2024-08-29",
+                    "2024-09-05",
+                ]
+            ),
+            "home_team": ["Arsenal", "Arsenal", "Arsenal", "Arsenal", "Arsenal", "Arsenal"],
+            "away_team": ["A", "B", "C", "D", "E", "F"],
+            "FTHG": [2, 1, 0, 3, 2, 1],
+            "FTAG": [1, 1, 2, 0, 0, 1],
+        }
+    )
+    out = _add_form_features(df, window=5)
+    # Match index 5 (the 6th): prior 5 results for Arsenal as home: W, D, L, W, W
+    assert out.loc[5, "home_form_wins"] == 3
+    assert out.loc[5, "home_form_draws"] == 1
+    assert out.loc[5, "home_form_losses"] == 1
+
+
+def test_form_features_first_match_zeros() -> None:
+    """A team with no prior matches gets all zeros (no history to count)."""
+    df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2024-08-15"]),
+            "home_team": ["Arsenal"],
+            "away_team": ["Chelsea"],
+            "FTHG": [2],
+            "FTAG": [1],
+        }
+    )
+    out = _add_form_features(df, window=5)
+    assert out.loc[0, "home_form_wins"] == 0
+    assert out.loc[0, "home_form_draws"] == 0
+    assert out.loc[0, "home_form_losses"] == 0
