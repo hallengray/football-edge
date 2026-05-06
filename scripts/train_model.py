@@ -181,12 +181,265 @@ def write_artifacts_atomically(
         raise
 
 
+def build_calibrated_classifier():
+    """Same pipeline shape as v0 - keeping classifier constant isolates feature uplift."""
+    from sklearn.calibration import CalibratedClassifierCV
+    from sklearn.compose import make_column_transformer
+    from sklearn.ensemble import GradientBoostingClassifier
+    from sklearn.impute import SimpleImputer
+    from sklearn.multioutput import MultiOutputClassifier
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import OneHotEncoder
+
+    return make_pipeline(
+        make_column_transformer(
+            (
+                OneHotEncoder(handle_unknown="ignore"),
+                ["league", "home_team", "away_team"],
+            ),
+            remainder="passthrough",
+        ),
+        SimpleImputer(strategy="mean"),
+        MultiOutputClassifier(
+            CalibratedClassifierCV(
+                GradientBoostingClassifier(random_state=0),
+                method="isotonic",
+                cv=3,
+            )
+        ),
+    )
+
+
+def _find_first_present_columns(df: pd.DataFrame, candidates: list[list[str]]) -> list[str] | None:
+    """Return the first list from `candidates` whose every column is present in df."""
+    for candidate in candidates:
+        if all(col in df.columns for col in candidate):
+            return candidate
+    return None
+
+
+def _split_by_league(features_df: pd.DataFrame, league: str):
+    """Filter the master feature DataFrame to one league. Returns (X, Y, O) tuple.
+
+    Y columns: 5 markets in the locked order home_win/draw/away_win/over_2.5/under_2.5.
+    O columns: bookmaker decimal odds for each market (from football-data CSV).
+    X columns: everything else minus FTR/etc. that wouldn't be available pre-match.
+    """
+    df = features_df[features_df["league"] == LEAGUE_TO_FOOTBALL_DATA[league]].copy()
+
+    # Build Y from FTHG vs FTAG
+    home_goals = df["FTHG"]
+    away_goals = df["FTAG"]
+    total_goals = home_goals + away_goals
+
+    Y = pd.DataFrame(
+        {
+            "output__home_win__full_time_goals": (home_goals > away_goals).astype(int),
+            "output__draw__full_time_goals": (home_goals == away_goals).astype(int),
+            "output__away_win__full_time_goals": (home_goals < away_goals).astype(int),
+            "output__over_2.5__full_time_goals": (total_goals > 2.5).astype(int),
+            "output__under_2.5__full_time_goals": (total_goals <= 2.5).astype(int),
+        }
+    )
+
+    # Odds columns from football-data CSV: B365H, B365D, B365A for h2h
+    # We use AvgH/D/A (or BbAvH/D/A in older seasons) if present; fall back to B365.
+    h2h_cols = _find_first_present_columns(
+        df,
+        [
+            ["AvgH", "AvgD", "AvgA"],
+            ["BbAvH", "BbAvD", "BbAvA"],
+            ["B365H", "B365D", "B365A"],
+        ],
+    )
+    over_under_cols = _find_first_present_columns(
+        df,
+        [
+            ["AvgOver2.5", "AvgUnder2.5"],
+            ["BbAv>2.5", "BbAv<2.5"],
+            ["B365>2.5", "B365<2.5"],
+        ],
+    )
+
+    O = pd.DataFrame(  # noqa: E741
+        {
+            "output__home_win__full_time_goals": df[h2h_cols[0]] if h2h_cols else 2.0,
+            "output__draw__full_time_goals": df[h2h_cols[1]] if h2h_cols else 3.5,
+            "output__away_win__full_time_goals": df[h2h_cols[2]] if h2h_cols else 4.0,
+            "output__over_2.5__full_time_goals": df[over_under_cols[0]] if over_under_cols else 2.0,
+            "output__under_2.5__full_time_goals": df[over_under_cols[1]]
+            if over_under_cols
+            else 1.85,
+        }
+    )
+
+    # X = features only -- drop the outcome columns and odds columns
+    drop_cols = ["FTHG", "FTAG", "FTR", "HTHG", "HTAG", "HTR"]
+    feature_cols = [
+        c
+        for c in df.columns
+        if c not in drop_cols
+        and not (h2h_cols and c in h2h_cols)
+        and not (over_under_cols and c in over_under_cols)
+    ]
+    X = df[feature_cols].reset_index(drop=True)
+    Y = Y.reset_index(drop=True)
+    O = O.reset_index(drop=True)  # noqa: E741
+    return X, Y, O
+
+
+def _build_upcoming_fixtures_for_features(matches_raw: pd.DataFrame) -> pd.DataFrame:
+    """Snapshot upcoming fixtures from The Odds API in a shape compute_features can consume.
+
+    Why The Odds API rather than football-data's fixtures.csv: spec flagged this as
+    planner-resolvable. We pick The Odds API because it's known to cover all 5 leagues
+    and tags each fixture with a sport_key we map to our internal league key. The
+    football-data fixtures.csv may be EPL-only.
+
+    Returns a DataFrame with HomeTeam, AwayTeam, Date, league, year, plus placeholder
+    FTHG=0/FTAG=0 (don't affect rolling features for the fixture row itself because
+    rolling uses shift(1) - only past matches contribute).
+    """
+    from src.odds import get_big5_odds
+    from src.team_names import from_canonical, to_canonical
+
+    fixtures = get_big5_odds()
+    rows: list[dict] = []
+    for fixture in fixtures:
+        try:
+            home_canonical = to_canonical(fixture["home_team"], source="odds_api")
+            away_canonical = to_canonical(fixture["away_team"], source="odds_api")
+        except KeyError as e:
+            logger.warning(f"Skipping unmapped fixture team: {e}")
+            continue
+        home_fd = from_canonical(home_canonical, target="football_data")
+        away_fd = from_canonical(away_canonical, target="football_data")
+        league_fd = LEAGUE_TO_FOOTBALL_DATA[fixture["league"]]
+        rows.append(
+            {
+                "Date": pd.to_datetime(fixture["commence_time"]).date().isoformat(),
+                "HomeTeam": home_fd,
+                "AwayTeam": away_fd,
+                "FTHG": 0,
+                "FTAG": 0,
+                "league": league_fd,
+                "year": pd.to_datetime(fixture["commence_time"]).year,
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame()
+    fixtures_df = pd.DataFrame(rows)
+    if "date" in matches_raw.columns and "Date" in fixtures_df.columns:
+        fixtures_df = fixtures_df.rename(columns={"Date": "date"})
+    if "home_team" in matches_raw.columns and "HomeTeam" in fixtures_df.columns:
+        fixtures_df = fixtures_df.rename(columns={"HomeTeam": "home_team", "AwayTeam": "away_team"})
+    return fixtures_df
+
+
 def main() -> None:
-    raise NotImplementedError("Implemented in Task 11")
+    """Train all five per-league bettors end-to-end and persist artifacts."""
+    from src.features import compute_features
+    from src.ingest.football_data import download_training_data
+    from src.ingest.understat import fetch_xg_data
 
+    print("Football Edge - training Big-5 multi-output bettors")
+    print("=" * 60)
 
-# Re-export imports used by main() (kept here so import order is stable)
-_ = (dt, pkg_version, logger)
+    training_years = list(range(2018, 2026))
+
+    # 1. Ingest
+    print("\n[1/5] Downloading football-data.co.uk CSVs...")
+    football_leagues = list(LEAGUE_TO_FOOTBALL_DATA.values())
+    matches_raw = download_training_data(leagues=football_leagues, years=training_years)
+    print(f"  Loaded {len(matches_raw)} historical matches.")
+
+    # Normalise football-data's column names to lowercase that compute_features expects.
+    if "Date" in matches_raw.columns and "date" not in matches_raw.columns:
+        matches_raw = matches_raw.rename(columns={"Date": "date"})
+    if "HomeTeam" in matches_raw.columns and "home_team" not in matches_raw.columns:
+        matches_raw = matches_raw.rename(columns={"HomeTeam": "home_team", "AwayTeam": "away_team"})
+
+    print("  Fetching upcoming fixtures from The Odds API...")
+    upcoming_fixtures = _build_upcoming_fixtures_for_features(matches_raw)
+    print(f"  Snapshotted {len(upcoming_fixtures)} upcoming fixtures across the Big-5.")
+
+    print("\n[2/5] Scraping Understat xG (this is the slow ingest step)...")
+    understat_leagues = list(LEAGUE_TO_UNDERSTAT.values())
+    xg_df = fetch_xg_data(leagues=understat_leagues, years=training_years)
+    print(f"  Loaded xG for {len(xg_df)} historical matches.")
+
+    # 2. Feature engineering -- combine training + upcoming so compute_features sees
+    # full history when computing rolling features for upcoming-fixture rows.
+    # compute_features uses shift(1), so the upcoming-fixture rows' OWN placeholder
+    # outcomes don't pollute their own features.
+    print("\n[3/5] Computing engineered features...")
+    if not upcoming_fixtures.empty:
+        combined = pd.concat([matches_raw, upcoming_fixtures], ignore_index=True)
+    else:
+        combined = matches_raw
+    combined_features = compute_features(combined, xg_df)
+
+    n_training = len(matches_raw)
+    features_df = combined_features.iloc[:n_training].reset_index(drop=True)
+    fixtures_features_df = combined_features.iloc[n_training:].reset_index(drop=True)
+    print(f"  Training features shape: {features_df.shape}")
+    print(f"  Fixtures features shape: {fixtures_features_df.shape}")
+
+    # 3. Per-league training loop
+    print("\n[4/5] Per-league training (~5-10 minutes per league)...")
+    bettors: dict[str, Any] = {}
+    league_summaries: dict[str, dict] = {}
+
+    for league in BIG_5_LEAGUES:
+        print(f"  - Training {league}...")
+        X, Y, O = _split_by_league(features_df, league)  # noqa: E741
+        if len(X) < 100:
+            raise RuntimeError(
+                f"League {league} has only {len(X)} matches - refusing to train. "
+                f"Check team-name mappings and ingest output."
+            )
+
+        league_summaries[league] = {
+            "n_matches": len(X),
+            **run_backtest_cv(
+                build_calibrated_classifier,
+                X,
+                Y,
+                O,
+                n_splits=5,
+                value_threshold=0.05,
+            ),
+        }
+        bettor = build_calibrated_classifier()
+        bettor.fit(X, Y)
+        bettors[league] = bettor
+        print(f"    Done. {len(X)} matches.")
+
+    # 4. Build summary
+    summary = {
+        "trained_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+        "training_seasons": training_years,
+        "sklearn_version": pkg_version("scikit-learn"),
+        "n_training_matches": int(len(features_df)),
+        "leagues": league_summaries,
+    }
+
+    # 5. Atomic persist
+    print("\n[5/5] Persisting artifacts...")
+    write_artifacts_atomically(bettors, fixtures_features_df, summary)
+
+    print("\nDone. Artifacts written to:")
+    for league in BIG_5_LEAGUES:
+        print(f"     {BETTOR_PATHS[league]}")
+    print(f"     {FIXTURES_PATH}")
+    print(f"     {BACKTEST_PATH}")
+    print("\nPer-league per-market backtest summary:")
+    for league, league_summary in summary["leagues"].items():
+        print(f"\n  {league} ({league_summary['n_matches']} matches):")
+        for market, stats in league_summary["markets"].items():
+            print(f"    {market:<12} {stats['n_bets']:>4} bets  yield {stats['yield_pct']:+.2f}%")
+    print()
 
 
 if __name__ == "__main__":
