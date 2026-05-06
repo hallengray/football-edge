@@ -1,16 +1,13 @@
-"""Model loading and prediction wrapper.
+"""Multi-league prediction container and routing.
 
-Wraps a `sports-betting` library multi-output ClassifierBettor and the primed
-SoccerDataLoader needed for inference. Falls back to demo mode (synthetic
-probabilities) when artifacts are missing or inference fails.
+`Models` holds a dict of per-league fitted bettors plus a shared fixtures DataFrame
+and the parsed backtest summary. `is_ready` is True only when all five leagues'
+bettors are loaded and the fixtures+backtest are present.
 
-Three artifacts are loaded together:
-    models/epl_bettor.pkl   — the fitted ClassifierBettor
-    models/epl_loader.pkl   — the SoccerDataLoader, primed by extract_train_data
-    models/backtest.json    — per-market backtest summary (for the dashboard)
-
-If any artifact is missing or unloadable, the entire Models container reports
-is_ready=False and the dashboard falls back to demo predictions.
+`predict_fixture(models, league, home_team, away_team)` routes to the right bettor
+based on the `league` key (passed in by the dashboard from the Odds API's sport_key).
+Demo fallback for any error: missing bettor, unmapped team, no fixture row, library
+exception during predict_proba.
 """
 
 from __future__ import annotations
@@ -25,16 +22,25 @@ from typing import Any
 
 import pandas as pd
 
-# KeyError from to_library is intentionally caught by predict_fixture's outer
-# except — unmapped teams fall back to demo mode for that fixture only.
-from src.team_names import to_library
-
 logger = logging.getLogger(__name__)
 
-MODELS_DIR = Path(__file__).parent.parent / "models"
-BETTOR_PATH = MODELS_DIR / "epl_bettor.pkl"
-LOADER_PATH = MODELS_DIR / "epl_loader.pkl"
-BACKTEST_PATH = MODELS_DIR / "backtest.json"
+BIG_5_LEAGUES: list[str] = ["epl", "laliga", "seriea", "bundesliga", "ligue1"]
+
+# Map internal league key -> football-data.co.uk league name (used in fixtures_df["league"])
+LEAGUE_TO_FOOTBALL_DATA: dict[str, str] = {
+    "epl": "England",
+    "laliga": "Spain",
+    "seriea": "Italy",
+    "bundesliga": "Germany",
+    "ligue1": "France",
+}
+
+MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
+BETTOR_PATHS: dict[str, Path] = {
+    league: MODELS_DIR / f"{league}_bettor.pkl" for league in BIG_5_LEAGUES
+}
+FIXTURES_PATH: Path = MODELS_DIR / "fixtures_data.parquet"
+BACKTEST_PATH: Path = MODELS_DIR / "backtest.json"
 
 
 @dataclass
@@ -52,37 +58,35 @@ class MatchPrediction:
 
 @dataclass
 class Models:
-    """Container for the three artifacts plus session-cached fixtures DataFrame."""
+    """Container for per-league bettors plus shared inference artifacts."""
 
-    bettor: Any | None
-    loader: Any | None
-    backtest: dict | None
-    # Populated on first predict_fixture call as a session cache; persists for
-    # the lifetime of the cached Models instance (see st.cache_resource in app.py).
-    fixtures_df: pd.DataFrame | None = field(default=None)
+    bettors: dict[str, Any] = field(default_factory=dict)
+    fixtures_df: pd.DataFrame | None = None
+    backtest: dict | None = None
 
     @property
     def is_ready(self) -> bool:
-        """True when all three inference artifacts are loaded."""
-        return self.bettor is not None and self.loader is not None and self.backtest is not None
+        """True only when all five leagues' bettors plus fixtures+backtest are loaded."""
+        return (
+            len(self.bettors) == len(BIG_5_LEAGUES)
+            and all(self.bettors.get(league) is not None for league in BIG_5_LEAGUES)
+            and self.fixtures_df is not None
+            and self.backtest is not None
+        )
 
 
 def load_models() -> Models:
-    """Load all three artifacts. Any missing or corrupt → demo mode (is_ready=False)."""
-    # Patch the sports-betting library before unpickling so the loader's
-    # subsequent extract_fixtures_data() call uses our REST-API replacement
-    # for the broken GitHub-HTML scraper.
-    try:
-        from src.sportsbet_patch import apply_patch
+    """Read 5 *_bettor.pkl + fixtures_data.parquet + backtest.json. Any missing -> demo."""
+    bettors: dict[str, Any] = {}
+    for league, path in BETTOR_PATHS.items():
+        loaded = _safe_unpickle(path)
+        if loaded is not None:
+            bettors[league] = loaded
 
-        apply_patch()
-    except Exception as e:  # patching is best-effort — never block load
-        logger.warning(f"Could not apply sports-betting patch: {e}")
-
-    bettor = _safe_unpickle(BETTOR_PATH)
-    loader = _safe_unpickle(LOADER_PATH)
+    fixtures_df = _safe_load_parquet(FIXTURES_PATH)
     backtest_data = _safe_load_json(BACKTEST_PATH)
-    return Models(bettor=bettor, loader=loader, backtest=backtest_data)
+
+    return Models(bettors=bettors, fixtures_df=fixtures_df, backtest=backtest_data)
 
 
 def _safe_unpickle(path: Path) -> Any | None:
@@ -93,6 +97,16 @@ def _safe_unpickle(path: Path) -> Any | None:
             return pickle.load(f)
     except Exception as e:  # pickle errors, version skew, anything
         logger.warning(f"Could not load pickle {path}: {e}")
+        return None
+
+
+def _safe_load_parquet(path: Path) -> pd.DataFrame | None:
+    if not path.exists():
+        return None
+    try:
+        return pd.read_parquet(path)
+    except Exception as e:
+        logger.warning(f"Could not load parquet {path}: {e}")
         return None
 
 
@@ -109,59 +123,58 @@ def _safe_load_json(path: Path) -> dict | None:
 
 def predict_fixture(
     models: Models | None,
+    league: str,
     home_team: str,
     away_team: str,
 ) -> MatchPrediction:
-    """Get probabilities for an upcoming fixture.
+    """Get probabilities for an upcoming fixture. Multi-league routing.
 
-    home_team and away_team are Odds API names. Falls back to demo mode if:
-    - models is None or not ready
-    - team name isn't in the static Odds API → library map
-    - the library has no fixture row matching the team pair
-    - the bettor's predict_proba throws
+    home_team and away_team are Odds API names (long form). League is one of
+    BIG_5_LEAGUES. Falls back to demo mode on any error.
 
     Y.columns order from training is locked to:
         [home_win, draw, away_win, over_2.5, under_2.5]
-    indexed as 0/1/2/3/4 below. If `backtest.json` records a different order
-    (Task 8 writes this), this function must change accordingly.
+    indexed as 0/1/2/3 below for the four probabilities we surface.
     """
     if not isinstance(models, Models) or not models.is_ready:
         return _demo_prediction(home_team, away_team)
+    if league not in BIG_5_LEAGUES:
+        return _demo_prediction(home_team, away_team)
 
     try:
-        home_lib = to_library(home_team)
-        away_lib = to_library(away_team)
+        from src.team_names import to_canonical
 
-        if models.fixtures_df is None:
-            X_fix, _, _ = models.loader.extract_fixtures_data()
-            models.fixtures_df = X_fix
+        home_canonical = to_canonical(home_team, source="odds_api")
+        away_canonical = to_canonical(away_team, source="odds_api")
+        league_fd_name = LEAGUE_TO_FOOTBALL_DATA[league]
 
         match = models.fixtures_df[
-            (models.fixtures_df["home_team"] == home_lib)
-            & (models.fixtures_df["away_team"] == away_lib)
+            (models.fixtures_df["league"] == league_fd_name)
+            & (models.fixtures_df["home_team"] == home_canonical)
+            & (models.fixtures_df["away_team"] == away_canonical)
         ]
         if match.empty:
             logger.warning(
-                f"No library fixture for {home_team}({home_lib}) vs {away_team}({away_lib})"
+                f"No library fixture for {home_team}({home_canonical}) vs "
+                f"{away_team}({away_canonical}) in {league}"
             )
             return _demo_prediction(home_team, away_team)
 
-        # Double brackets (iloc[[0]]) keeps the result a 1-row DataFrame instead of a
-        # Series — predict_proba expects a DataFrame for column-name preservation.
-        probs = models.bettor.predict_proba(match.iloc[[0]])[0]
+        bettor = models.bettors[league]
+        probs_per_market = bettor.predict_proba(match.iloc[[0]])
 
         return MatchPrediction(
             home_team=home_team,
             away_team=away_team,
-            p_home=float(probs[0]),
-            p_draw=float(probs[1]),
-            p_away=float(probs[2]),
-            p_over_2_5=float(probs[3]),
+            p_home=float(probs_per_market[0][0][1]),
+            p_draw=float(probs_per_market[1][0][1]),
+            p_away=float(probs_per_market[2][0][1]),
+            p_over_2_5=float(probs_per_market[3][0][1]),
             is_demo=False,
         )
     except Exception as e:
         logger.warning(
-            f"Real-model inference failed for {home_team} vs {away_team}: {e}",
+            f"Real-model inference failed for {league}: {home_team} vs {away_team}: {e}",
             exc_info=True,
         )
         return _demo_prediction(home_team, away_team)
@@ -170,8 +183,7 @@ def predict_fixture(
 def _demo_prediction(home_team: str, away_team: str) -> MatchPrediction:
     """Generate plausible-shaped probabilities for testing the dashboard.
 
-    Uses a deterministic hash of the team names to get repeatable values
-    plus a small home-advantage bias. NOT predictive — purely for demo.
+    Deterministic hash of team names plus a small home-advantage bias. NOT predictive.
     """
     seed_str = f"{home_team}|{away_team}"
     h = int(hashlib.md5(seed_str.encode()).hexdigest(), 16)
