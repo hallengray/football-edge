@@ -5,6 +5,7 @@ is higher than the bookmaker's *fair* implied probability (with the margin
 stripped out). The Kelly criterion then tells you what fraction of your
 bankroll to risk to maximise long-term growth.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

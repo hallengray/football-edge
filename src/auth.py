@@ -3,6 +3,7 @@
 Reads the password from APP_PASSWORD (env var or Streamlit secrets).
 Once entered correctly, stays authenticated for the session.
 """
+
 from __future__ import annotations
 
 import os

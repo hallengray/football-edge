@@ -5,6 +5,7 @@ Three tables (defined in supabase/schema.sql):
     bets        — bets you actually placed (linked to a prediction)
     outcomes    — settled results (linked to a bet)
 """
+
 from __future__ import annotations
 
 import os
@@ -22,6 +23,7 @@ def get_client() -> Client:
     if not url or not key:
         try:
             import streamlit as st
+
             url = url or st.secrets.get("SUPABASE_URL")
             key = key or st.secrets.get("SUPABASE_KEY")
         except Exception:
@@ -67,9 +69,7 @@ def log_prediction(
         "logged_at": _now(),
     }
     result = (
-        client.table("predictions")
-        .upsert(data, on_conflict="fixture_id,market,outcome")
-        .execute()
+        client.table("predictions").upsert(data, on_conflict="fixture_id,market,outcome").execute()
     )
     return result.data[0] if result.data else {}
 

@@ -4,6 +4,7 @@ Fetches upcoming Premier League fixtures and bookmaker odds.
 Free tier at https://the-odds-api.com gives 500 requests/month — plenty for
 weekly checks.
 """
+
 from __future__ import annotations
 
 import os
