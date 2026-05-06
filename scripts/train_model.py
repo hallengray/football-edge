@@ -26,6 +26,12 @@ from typing import Any
 import pandas as pd
 
 ROOT = Path(__file__).parent.parent
+# Make project root importable so `from src.foo import ...` works when this
+# script is run directly (`python scripts/train_model.py`). Streamlit/pytest
+# do this automatically; CLI entry-points need to do it explicitly.
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 MODELS_DIR = ROOT / "models"
 BETTOR_PATH = MODELS_DIR / "epl_bettor.pkl"
 LOADER_PATH = MODELS_DIR / "epl_loader.pkl"
