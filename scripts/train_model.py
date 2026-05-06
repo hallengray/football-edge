@@ -92,14 +92,17 @@ def run_backtest(
     """Run library backtest and reduce per-market columns into a JSON-ready summary.
 
     Library's `backtest()` returns a DataFrame indexed by training-window start date
-    with per-market columns like:
-        Yield percentage per bet (home_win__full_time_goals)
+    with two per-market columns per market:
         Number of bets (home_win__full_time_goals)
-        Precision per bet (home_win__full_time_goals)
+        Yield percentage per bet (home_win__full_time_goals)
 
-    We aggregate those across rows to produce one summary block per market.
-    The caller must pass `training_years` (the list of seasons used by the SoccerDataLoader)
-    explicitly so that backtest.json reports the actual seasons, not a hardcoded list.
+    We aggregate those across rows to produce one summary block per market. Note:
+    sports-betting v0.12.1 does NOT expose per-market win rate; only n_bets and
+    yield are surfaced. Yield is the meaningful P&L metric for paper-trading.
+
+    The caller must pass `training_years` (the list of seasons used by the
+    SoccerDataLoader) explicitly so that backtest.json reports the actual seasons,
+    not a hardcoded list.
     """
     import sportsbet
     from sportsbet.evaluation import backtest as library_backtest
@@ -112,9 +115,12 @@ def run_backtest(
     for m in markets:
         col_market = f"{m}__full_time_goals"
         n_bets_col = f"Number of bets ({col_market})"
-        win_rate_col = f"Precision per bet ({col_market})"
         yield_col = f"Yield percentage per bet ({col_market})"
 
+        # Library v0.12.1 only exposes per-market `Number of bets` and `Yield percentage
+        # per bet`; there is no per-market win-rate column. Yield captures what matters
+        # for paper-trading (P&L per bet); deriving win rate would require breaking
+        # into the library's CV internals, which isn't worth it.
         if n_bets_col not in bt_df.columns:
             print(
                 f"[warn] backtest column not found for market {m!r} "
@@ -122,21 +128,17 @@ def run_backtest(
                 f"Library naming may have changed.",
                 file=sys.stderr,
             )
-            market_summary[m] = {"n_bets": 0, "win_rate": 0.0, "yield_pct": 0.0}
+            market_summary[m] = {"n_bets": 0, "yield_pct": 0.0}
             continue
 
         total_bets = int(bt_df[n_bets_col].sum())
-        # Average win rate weighted by number of bets per row
         if total_bets > 0:
-            weighted_win = (bt_df[win_rate_col] * bt_df[n_bets_col]).sum() / total_bets
             weighted_yield = (bt_df[yield_col] * bt_df[n_bets_col]).sum() / total_bets
         else:
-            weighted_win = 0.0
             weighted_yield = 0.0
 
         market_summary[m] = {
             "n_bets": total_bets,
-            "win_rate": float(weighted_win),
             "yield_pct": float(weighted_yield),
         }
 
@@ -227,11 +229,7 @@ def main() -> None:
     print(f"     {BACKTEST_PATH}")
     print("\nPer-market backtest summary:")
     for market, stats in summary["markets"].items():
-        print(
-            f"  {market:<12} {stats['n_bets']:>4} bets  "
-            f"win-rate {stats['win_rate'] * 100:>5.1f}%  "
-            f"yield {stats['yield_pct']:+.2f}%"
-        )
+        print(f"  {market:<12} {stats['n_bets']:>4} bets  yield {stats['yield_pct']:+.2f}%")
     print()
 
 

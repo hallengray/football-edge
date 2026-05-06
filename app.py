@@ -86,10 +86,9 @@ def render_model_info(models: Models) -> None:
         for market_key in ["home_win", "draw", "away_win", "over_2.5", "under_2.5"]:
             stats = markets.get(market_key, {})
             n = stats.get("n_bets", 0)
-            wr = stats.get("win_rate", 0.0) * 100
             yp = stats.get("yield_pct", 0.0)
             label = market_key.replace("_", " ").title()
-            st.markdown(f"- **{label}**: {n} bets, {wr:.0f}% win rate, {yp:+.1f}% yield")
+            st.markdown(f"- **{label}**: {n} bets, {yp:+.1f}% yield")
         if stale_marker:
             st.caption("Model is over 90 days old — consider retraining.")
 
