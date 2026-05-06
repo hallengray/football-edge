@@ -161,6 +161,11 @@ def main() -> None:
     from sportsbet.datasets import SoccerDataLoader
     from sportsbet.evaluation import ClassifierBettor
 
+    from src.sportsbet_patch import apply_patch
+
+    # Patch the library's broken GitHub-scraping discovery before any loader call.
+    apply_patch()
+
     # Single source of truth for the season range — also passed to run_backtest below
     training_years = list(range(2018, 2026))
 

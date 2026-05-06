@@ -69,6 +69,16 @@ class Models:
 
 def load_models() -> Models:
     """Load all three artifacts. Any missing or corrupt → demo mode (is_ready=False)."""
+    # Patch the sports-betting library before unpickling so the loader's
+    # subsequent extract_fixtures_data() call uses our REST-API replacement
+    # for the broken GitHub-HTML scraper.
+    try:
+        from src.sportsbet_patch import apply_patch
+
+        apply_patch()
+    except Exception as e:  # patching is best-effort — never block load
+        logger.warning(f"Could not apply sports-betting patch: {e}")
+
     bettor = _safe_unpickle(BETTOR_PATH)
     loader = _safe_unpickle(LOADER_PATH)
     backtest_data = _safe_load_json(BACKTEST_PATH)
