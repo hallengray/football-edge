@@ -11,8 +11,11 @@ from __future__ import annotations
 import json
 import math
 import pickle
+from unittest.mock import MagicMock
 
-from src.predictions import Models, _demo_prediction, load_models
+import pandas as pd
+
+from src.predictions import Models, _demo_prediction, load_models, predict_fixture
 
 
 def test_demo_prediction_returns_demo_flag() -> None:
@@ -117,3 +120,91 @@ def test_load_models_handles_corrupt_backtest_json(tmp_path, monkeypatch) -> Non
     models = load_models()
     assert models.is_ready is False
     assert models.backtest is None
+
+
+# ─── Phase 3: real branch in predict_fixture() ───
+
+
+def test_predict_fixture_demo_when_models_unready() -> None:
+    models = Models(bettor=None, loader=None, backtest=None)
+    pred = predict_fixture(models, "Arsenal", "Chelsea")
+    assert pred.is_demo is True
+
+
+def test_predict_fixture_demo_when_team_unmapped() -> None:
+    # Models look ready but team name isn't in our static map
+    bettor = MagicMock()
+    loader = MagicMock()
+    models = Models(bettor=bettor, loader=loader, backtest={"trained_at": "x"})
+    pred = predict_fixture(models, "Real Madrid", "Chelsea")
+    assert pred.is_demo is True
+    bettor.predict_proba.assert_not_called()
+
+
+def test_predict_fixture_demo_when_no_library_fixture_match() -> None:
+    # Models ready, teams mapped, but library has no matching fixture row
+    bettor = MagicMock()
+    loader = MagicMock()
+    loader.extract_fixtures_data.return_value = (
+        pd.DataFrame({"home_team": ["Liverpool"], "away_team": ["Everton"]}),
+        None,
+        None,
+    )
+    models = Models(bettor=bettor, loader=loader, backtest={"trained_at": "x"})
+    pred = predict_fixture(models, "Arsenal", "Chelsea")
+    assert pred.is_demo is True
+    bettor.predict_proba.assert_not_called()
+
+
+def test_predict_fixture_returns_real_probs_when_match_found() -> None:
+    bettor = MagicMock()
+    bettor.predict_proba.return_value = [[0.55, 0.20, 0.25, 0.62, 0.38]]
+    loader = MagicMock()
+    loader.extract_fixtures_data.return_value = (
+        pd.DataFrame({"home_team": ["Arsenal"], "away_team": ["Chelsea"]}),
+        None,
+        None,
+    )
+    models = Models(bettor=bettor, loader=loader, backtest={"trained_at": "x"})
+
+    pred = predict_fixture(models, "Arsenal", "Chelsea")
+
+    assert pred.is_demo is False
+    assert pred.p_home == 0.55
+    assert pred.p_draw == 0.20
+    assert pred.p_away == 0.25
+    assert pred.p_over_2_5 == 0.62
+    bettor.predict_proba.assert_called_once()
+
+
+def test_predict_fixture_caches_fixtures_df_across_calls() -> None:
+    bettor = MagicMock()
+    bettor.predict_proba.return_value = [[0.4, 0.3, 0.3, 0.5, 0.5]]
+    loader = MagicMock()
+    loader.extract_fixtures_data.return_value = (
+        pd.DataFrame({"home_team": ["Arsenal"], "away_team": ["Chelsea"]}),
+        None,
+        None,
+    )
+    models = Models(bettor=bettor, loader=loader, backtest={"trained_at": "x"})
+
+    predict_fixture(models, "Arsenal", "Chelsea")
+    predict_fixture(models, "Arsenal", "Chelsea")
+
+    # extract_fixtures_data should only be hit once thanks to fixtures_df cache
+    loader.extract_fixtures_data.assert_called_once()
+
+
+def test_predict_fixture_demo_when_predict_proba_throws() -> None:
+    bettor = MagicMock()
+    bettor.predict_proba.side_effect = RuntimeError("library exploded")
+    loader = MagicMock()
+    loader.extract_fixtures_data.return_value = (
+        pd.DataFrame({"home_team": ["Arsenal"], "away_team": ["Chelsea"]}),
+        None,
+        None,
+    )
+    models = Models(bettor=bettor, loader=loader, backtest={"trained_at": "x"})
+
+    pred = predict_fixture(models, "Arsenal", "Chelsea")
+    assert pred.is_demo is True

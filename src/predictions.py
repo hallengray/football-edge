@@ -98,17 +98,54 @@ def predict_fixture(
 ) -> MatchPrediction:
     """Get probabilities for an upcoming fixture.
 
-    Until Task 6, this function only returns demo predictions. The real-model
-    inference branch is wired in the next commit; the structure below is intentionally
-    left in three explicit branches so Task 6's diff is minimal.
+    home_team and away_team are Odds API names. Falls back to demo mode if:
+    - models is None or not ready
+    - team name isn't in the static Odds API → library map
+    - the library has no fixture row matching the team pair
+    - the bettor's predict_proba throws
+
+    Y.columns order from training is locked to:
+        [home_win, draw, away_win, over_2.5, under_2.5]
+    indexed as 0/1/2/3/4 below. If `backtest.json` records a different order
+    (Task 8 writes this), this function must change accordingly.
     """
-    if not isinstance(models, Models):
-        # Legacy code path (removed in Task 10 alongside app.py changes)
+    if not isinstance(models, Models) or not models.is_ready:
         return _demo_prediction(home_team, away_team)
-    if not models.is_ready:
+
+    try:
+        from src.team_names import to_library
+
+        home_lib = to_library(home_team)
+        away_lib = to_library(away_team)
+
+        if models.fixtures_df is None:
+            X_fix, _, _ = models.loader.extract_fixtures_data()
+            models.fixtures_df = X_fix
+
+        match = models.fixtures_df[
+            (models.fixtures_df["home_team"] == home_lib)
+            & (models.fixtures_df["away_team"] == away_lib)
+        ]
+        if match.empty:
+            logger.warning(
+                f"No library fixture for {home_team}({home_lib}) vs {away_team}({away_lib})"
+            )
+            return _demo_prediction(home_team, away_team)
+
+        probs = models.bettor.predict_proba(match.iloc[[0]])[0]
+
+        return MatchPrediction(
+            home_team=home_team,
+            away_team=away_team,
+            p_home=float(probs[0]),
+            p_draw=float(probs[1]),
+            p_away=float(probs[2]),
+            p_over_2_5=float(probs[3]),
+            is_demo=False,
+        )
+    except Exception as e:
+        logger.warning(f"Real-model inference failed for {home_team} vs {away_team}: {e}")
         return _demo_prediction(home_team, away_team)
-    # Real-model branch wired in Task 6
-    return _demo_prediction(home_team, away_team)
 
 
 def _demo_prediction(home_team: str, away_team: str) -> MatchPrediction:
