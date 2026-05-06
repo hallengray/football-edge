@@ -10,6 +10,11 @@ from src.ingest.football_data import (
     download_fixtures_data,
     download_training_data,
 )
+from src.ingest.understat import (
+    LEAGUE_PAGE_URL_TEMPLATE,
+    fetch_league_xg,
+    fetch_xg_data,
+)
 
 
 def test_training_url_template_has_expected_placeholders() -> None:
@@ -99,3 +104,76 @@ def test_download_fixtures_data_always_refetches(tmp_path, monkeypatch) -> None:
         download_fixtures_data()
         # Both calls should hit the network — fixtures are always fresh
         assert m.call_count == 2
+
+
+# ─── Understat ingest tests ──────────────────────────────────────────
+
+
+SAMPLE_UNDERSTAT_HTML = """
+<html><body>
+<script>
+var datesData = JSON.parse('\\u005B\\u007B\\u0022id\\u0022:\\u00221\\u0022,\\u0022isResult\\u0022:true,\\u0022h\\u0022:\\u007B\\u0022id\\u0022:\\u00229\\u0022,\\u0022title\\u0022:\\u0022Arsenal\\u0022,\\u0022short_title\\u0022:\\u0022ARS\\u0022\\u007D,\\u0022a\\u0022:\\u007B\\u0022id\\u0022:\\u002210\\u0022,\\u0022title\\u0022:\\u0022Chelsea\\u0022,\\u0022short_title\\u0022:\\u0022CHE\\u0022\\u007D,\\u0022goals\\u0022:\\u007B\\u0022h\\u0022:\\u00222\\u0022,\\u0022a\\u0022:\\u00221\\u0022\\u007D,\\u0022xG\\u0022:\\u007B\\u0022h\\u0022:\\u00221.85\\u0022,\\u0022a\\u0022:\\u00221.20\\u0022\\u007D,\\u0022datetime\\u0022:\\u00222024-08-15 16:30:00\\u0022\\u007D\\u005D');
+</script>
+</body></html>
+"""
+
+
+def test_understat_url_template() -> None:
+    assert (
+        LEAGUE_PAGE_URL_TEMPLATE.format(league="EPL", year=2024)
+        == "https://understat.com/league/EPL/2024"
+    )
+
+
+def test_fetch_league_xg_parses_embedded_json(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("src.ingest.understat.CACHE_DIR", tmp_path)
+    monkeypatch.setattr("src.ingest.understat.SCRAPE_SLEEP", 0)  # speed up tests
+
+    with requests_mock.Mocker() as m:
+        m.get("https://understat.com/league/EPL/2024", text=SAMPLE_UNDERSTAT_HTML)
+        df = fetch_league_xg("EPL", 2024)
+
+    assert len(df) == 1
+    row = df.iloc[0]
+    assert row["home_team"] == "Arsenal"
+    assert row["away_team"] == "Chelsea"
+    assert row["home_xg"] == pytest.approx(1.85)
+    assert row["away_xg"] == pytest.approx(1.20)
+
+
+def test_fetch_league_xg_handles_404_gracefully(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("src.ingest.understat.CACHE_DIR", tmp_path)
+    monkeypatch.setattr("src.ingest.understat.SCRAPE_SLEEP", 0)
+
+    with requests_mock.Mocker() as m:
+        m.get("https://understat.com/league/EPL/1999", status_code=404)
+        df = fetch_league_xg("EPL", 1999)
+
+    assert df.empty
+
+
+def test_fetch_league_xg_uses_cache(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("src.ingest.understat.CACHE_DIR", tmp_path)
+    monkeypatch.setattr("src.ingest.understat.SCRAPE_SLEEP", 0)
+
+    with requests_mock.Mocker() as m:
+        m.get("https://understat.com/league/EPL/2024", text=SAMPLE_UNDERSTAT_HTML)
+        fetch_league_xg("EPL", 2024)
+        assert m.call_count == 1
+        # Second call should read from cache parquet, not network
+        fetch_league_xg("EPL", 2024)
+        assert m.call_count == 1
+
+
+def test_fetch_xg_data_concatenates_leagues(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("src.ingest.understat.CACHE_DIR", tmp_path)
+    monkeypatch.setattr("src.ingest.understat.SCRAPE_SLEEP", 0)
+
+    with requests_mock.Mocker() as m:
+        m.get("https://understat.com/league/EPL/2024", text=SAMPLE_UNDERSTAT_HTML)
+        m.get("https://understat.com/league/La_liga/2024", text=SAMPLE_UNDERSTAT_HTML)
+
+        df = fetch_xg_data(leagues=["EPL", "La_liga"], years=[2024])
+
+    assert len(df) == 2
+    assert set(df["league"]) == {"EPL", "La_liga"}
