@@ -137,3 +137,139 @@ def _add_form_features(df: pd.DataFrame, window: int = WINDOW_DEFAULT) -> pd.Dat
 
     df = df.join(home).join(away)
     return df
+
+
+def _merge_xg(matches_df: pd.DataFrame, xg_df: pd.DataFrame) -> pd.DataFrame:
+    """Left-join xG data onto matches by (date, home_team, away_team).
+
+    Missing xG -> NaN. Caller's responsibility to handle (typically via
+    SimpleImputer at fit time).
+    """
+    if xg_df.empty:
+        out = matches_df.copy()
+        out["home_xg"] = pd.NA
+        out["away_xg"] = pd.NA
+        return out
+
+    matches = matches_df.copy()
+    matches["date"] = pd.to_datetime(matches["date"])
+    xg = xg_df.copy()
+    xg["date"] = pd.to_datetime(xg["date"])
+    xg = xg[["date", "home_team", "away_team", "home_xg", "away_xg"]]
+
+    return matches.merge(xg, on=["date", "home_team", "away_team"], how="left")
+
+
+def _add_rolling_goals(df: pd.DataFrame, window: int = WINDOW_DEFAULT) -> pd.DataFrame:
+    """Add `home_goals_scored_last_5`, `home_goals_conceded_last_5`, and away counterparts.
+
+    Uses only matches BEFORE the current row's date (per the leakage guard).
+    """
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date").reset_index(drop=True)
+
+    long_home = df[["date", "home_team", "FTHG", "FTAG"]].copy()
+    long_home["team"] = long_home["home_team"]
+    long_home["match_id"] = long_home.index
+    long_home["side"] = "home"
+    long_home["scored"] = long_home["FTHG"]
+    long_home["conceded"] = long_home["FTAG"]
+
+    long_away = df[["date", "away_team", "FTHG", "FTAG"]].copy()
+    long_away["team"] = long_away["away_team"]
+    long_away["match_id"] = long_away.index
+    long_away["side"] = "away"
+    long_away["scored"] = long_away["FTAG"]
+    long_away["conceded"] = long_away["FTHG"]
+
+    long = pd.concat([long_home, long_away], ignore_index=True)
+    long = long.sort_values(["team", "date"]).reset_index(drop=True)
+
+    grouped = long.groupby("team", group_keys=False)
+    long["scored_last_5"] = grouped["scored"].apply(
+        lambda s: s.shift(1).rolling(window, min_periods=1).mean()
+    )
+    long["conceded_last_5"] = grouped["conceded"].apply(
+        lambda s: s.shift(1).rolling(window, min_periods=1).mean()
+    )
+
+    home = (
+        long[long["side"] == "home"]
+        .set_index("match_id")[["scored_last_5", "conceded_last_5"]]
+        .rename(
+            columns={
+                "scored_last_5": "home_goals_scored_last_5",
+                "conceded_last_5": "home_goals_conceded_last_5",
+            }
+        )
+    )
+    away = (
+        long[long["side"] == "away"]
+        .set_index("match_id")[["scored_last_5", "conceded_last_5"]]
+        .rename(
+            columns={
+                "scored_last_5": "away_goals_scored_last_5",
+                "conceded_last_5": "away_goals_conceded_last_5",
+            }
+        )
+    )
+
+    df = df.join(home).join(away)
+    return df
+
+
+def _add_xg_features(df: pd.DataFrame, window: int = WINDOW_DEFAULT) -> pd.DataFrame:
+    """Add rolling xG/xGA averages plus xG-vs-actual delta (overperformance signal).
+
+    Requires `home_xg` and `away_xg` columns (from _merge_xg).
+    """
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date").reset_index(drop=True)
+
+    long_home = df[["date", "home_team", "home_xg", "away_xg", "FTHG", "FTAG"]].copy()
+    long_home["team"] = long_home["home_team"]
+    long_home["match_id"] = long_home.index
+    long_home["side"] = "home"
+    long_home["xg"] = long_home["home_xg"]
+    long_home["xga"] = long_home["away_xg"]
+    long_home["scored"] = long_home["FTHG"]
+
+    long_away = df[["date", "away_team", "home_xg", "away_xg", "FTHG", "FTAG"]].copy()
+    long_away["team"] = long_away["away_team"]
+    long_away["match_id"] = long_away.index
+    long_away["side"] = "away"
+    long_away["xg"] = long_away["away_xg"]
+    long_away["xga"] = long_away["home_xg"]
+    long_away["scored"] = long_away["FTAG"]
+
+    long = pd.concat([long_home, long_away], ignore_index=True)
+    long = long.sort_values(["team", "date"]).reset_index(drop=True)
+
+    long["scored_minus_xg"] = long["scored"] - long["xg"]
+
+    grouped = long.groupby("team", group_keys=False)
+    long["xg_last_5"] = grouped["xg"].apply(
+        lambda s: s.shift(1).rolling(window, min_periods=1).mean()
+    )
+    long["xga_last_5"] = grouped["xga"].apply(
+        lambda s: s.shift(1).rolling(window, min_periods=1).mean()
+    )
+    long["xg_minus_actual_last_5"] = grouped["scored_minus_xg"].apply(
+        lambda s: s.shift(1).rolling(window, min_periods=1).mean()
+    )
+
+    home = (
+        long[long["side"] == "home"]
+        .set_index("match_id")[["xg_last_5", "xga_last_5", "xg_minus_actual_last_5"]]
+        .add_prefix("home_")
+    )
+    away = (
+        long[long["side"] == "away"]
+        .set_index("match_id")[["xg_last_5", "xga_last_5", "xg_minus_actual_last_5"]]
+        .add_prefix("away_")
+    )
+
+    df = df.join(home).join(away)
+    return df

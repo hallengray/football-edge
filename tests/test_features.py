@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
-from src.features import _add_form_features, _add_rest_features
+from src.features import (
+    _add_form_features,
+    _add_rest_features,
+    _add_rolling_goals,
+    _add_xg_features,
+    _merge_xg,
+)
 
 
 def test_add_rest_features_first_match_uses_default() -> None:
@@ -97,3 +104,85 @@ def test_form_features_first_match_zeros() -> None:
     assert out.loc[0, "home_form_wins"] == 0
     assert out.loc[0, "home_form_draws"] == 0
     assert out.loc[0, "home_form_losses"] == 0
+
+
+# ─── Rolling goals + xG tests ────────────────────────────────────────
+
+
+def test_rolling_goals_uses_only_past_matches_no_leakage() -> None:
+    """The leakage guard: match N's `goals_last_5` only sees matches 0..N-1."""
+    df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2024-08-01", "2024-08-08", "2024-08-15"]),
+            "home_team": ["Arsenal", "Arsenal", "Arsenal"],
+            "away_team": ["A", "B", "C"],
+            "FTHG": [2, 4, 100],  # huge value at index 2 — a leakage bug would surface here
+            "FTAG": [1, 0, 0],
+        }
+    )
+    out = _add_rolling_goals(df, window=5)
+    # Index 2's home_goals_scored_last_5 should average matches 0 and 1: (2+4)/2 = 3.0
+    # If the impl mistakenly includes index 2, average becomes (2+4+100)/3 = 35.33
+    assert out.loc[2, "home_goals_scored_last_5"] == pytest.approx(3.0)
+
+
+def test_merge_xg_adds_home_xg_and_away_xg_columns() -> None:
+    matches = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2024-08-15"]),
+            "home_team": ["Arsenal"],
+            "away_team": ["Chelsea"],
+        }
+    )
+    xg = pd.DataFrame(
+        {
+            "date": ["2024-08-15"],
+            "home_team": ["Arsenal"],
+            "away_team": ["Chelsea"],
+            "home_xg": [1.85],
+            "away_xg": [1.20],
+        }
+    )
+    out = _merge_xg(matches, xg)
+    assert out.loc[0, "home_xg"] == pytest.approx(1.85)
+    assert out.loc[0, "away_xg"] == pytest.approx(1.20)
+
+
+def test_merge_xg_no_match_yields_nan() -> None:
+    matches = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2024-08-15"]),
+            "home_team": ["Arsenal"],
+            "away_team": ["Chelsea"],
+        }
+    )
+    xg = pd.DataFrame(
+        {
+            "date": ["2024-08-15"],
+            "home_team": ["Liverpool"],  # different match
+            "away_team": ["Tottenham"],
+            "home_xg": [2.5],
+            "away_xg": [1.0],
+        }
+    )
+    out = _merge_xg(matches, xg)
+    assert pd.isna(out.loc[0, "home_xg"])
+    assert pd.isna(out.loc[0, "away_xg"])
+
+
+def test_xg_minus_actual_overperformance_signal() -> None:
+    """Team scored 3 actual goals against 1.5 xG → +1.5 overperformance (lucky)."""
+    df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2024-08-01", "2024-08-08"]),
+            "home_team": ["Arsenal", "Arsenal"],
+            "away_team": ["A", "B"],
+            "FTHG": [3, 0],
+            "FTAG": [0, 0],
+            "home_xg": [1.5, 1.0],
+            "away_xg": [1.0, 1.0],
+        }
+    )
+    out = _add_xg_features(df, window=5)
+    # Index 1: Arsenal's prior match scored 3 vs xG 1.5 → +1.5 overperformance
+    assert out.loc[1, "home_xg_minus_actual_last_5"] == pytest.approx(1.5)
