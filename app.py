@@ -6,6 +6,7 @@ Deploy:         push to GitHub, connect to Streamlit Community Cloud
 
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime, timezone
 
@@ -25,6 +26,8 @@ from src.odds import best_odds_for_outcome, get_epl_odds
 from src.predictions import Models, load_models, predict_fixture
 from src.value import assess_value, remove_bookmaker_margin
 
+logger = logging.getLogger(__name__)
+
 load_dotenv()
 
 st.set_page_config(
@@ -37,6 +40,59 @@ st.set_page_config(
 # ───── Auth gate ─────
 if not check_password():
     st.stop()
+
+
+# ───── Models loader (cached for the session) ─────
+@st.cache_resource(show_spinner="Loading model…")
+def _load_models_cached() -> Models:
+    return load_models()
+
+
+_models = _load_models_cached()
+
+
+def render_model_info(models: Models) -> None:
+    """Render the 'Model info' sidebar expander when models are ready."""
+    if not models.is_ready or not models.backtest:
+        return
+
+    bt = models.backtest
+    trained_at_str = bt.get("trained_at", "")
+    age_days_str = ""
+    stale_marker = ""
+    try:
+        trained_at = datetime.fromisoformat(trained_at_str.replace("Z", "+00:00"))
+        age_days = (datetime.now(timezone.utc) - trained_at).days
+        age_days_str = f" ({age_days} days ago)"
+        if age_days > 90:
+            stale_marker = "⚠️ "
+    except (ValueError, AttributeError) as e:
+        logger.warning(
+            f"Could not parse backtest trained_at {trained_at_str!r}: {e}. "
+            "Age and stale-model warning will be omitted."
+        )
+
+    n_matches = bt.get("n_training_matches", "?")
+    seasons = bt.get("training_seasons", [])
+    seasons_str = f"{len(seasons)} seasons" if seasons else "unknown seasons"
+
+    with st.expander("📊 Model info", expanded=False):
+        st.markdown(
+            f"**Trained:** {stale_marker}{trained_at_str[:10]}{age_days_str}  \n"
+            f"**Data:** {seasons_str}, {n_matches} matches"
+        )
+        st.markdown("**Per-market backtest results:**")
+        markets = bt.get("markets", {})
+        for market_key in ["home_win", "draw", "away_win", "over_2.5", "under_2.5"]:
+            stats = markets.get(market_key, {})
+            n = stats.get("n_bets", 0)
+            wr = stats.get("win_rate", 0.0) * 100
+            yp = stats.get("yield_pct", 0.0)
+            label = market_key.replace("_", " ").title()
+            st.markdown(f"- **{label}**: {n} bets, {wr:.0f}% win rate, {yp:+.1f}% yield")
+        if stale_marker:
+            st.caption("Model is over 90 days old — consider retraining.")
+
 
 # ───── Sidebar settings ─────
 with st.sidebar:
@@ -65,15 +121,11 @@ with st.sidebar:
         "Most public models lose to the market."
     )
     st.caption("[BeGambleAware](https://www.begambleaware.org)")
+    st.divider()
 
+    # Model info expander (renders only when models loaded)
+    render_model_info(_models)
 
-# ───── Models loader (cached for the session) ─────
-@st.cache_resource(show_spinner="Loading model…")
-def _load_models_cached() -> Models:
-    return load_models()
-
-
-_models = _load_models_cached()
 
 # ───── Demo mode banner ─────
 if not _models.is_ready:
