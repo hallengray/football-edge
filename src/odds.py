@@ -53,6 +53,7 @@ def best_odds_for_outcome(
     fixture: dict[str, Any],
     market: str,
     outcome_name: str,
+    point: float | None = None,
 ) -> tuple[float, str] | None:
     """Find the best (highest) odds across all bookmakers for a given outcome.
 
@@ -60,7 +61,10 @@ def best_odds_for_outcome(
         fixture: A fixture dict from get_epl_odds().
         market: Market key — "h2h" or "totals".
         outcome_name: For h2h: home team name, away team name, or "Draw".
-                      For totals: "Over" or "Under" (with point in `point` field).
+                      For totals: "Over" or "Under" (point comes from the `point` arg).
+        point: Optional totals line filter (e.g. 2.5). When set, only outcomes whose
+            `point` field matches are considered. Required for totals to avoid mixing
+            different lines (Over 2.5 vs Over 3.5) across bookmakers.
 
     Returns:
         (best_decimal_odds, bookmaker_title), or None if no odds available.
@@ -74,6 +78,8 @@ def best_odds_for_outcome(
                 continue
             for o in m.get("outcomes", []):
                 if o.get("name") != outcome_name:
+                    continue
+                if point is not None and o.get("point") != point:
                     continue
                 price = o.get("price")
                 if price is None:

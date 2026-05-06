@@ -126,12 +126,32 @@ def _build_rows(
         fair = remove_bookmaker_margin(implied)
 
         outcomes = [
-            ("Home", home_team, pred.p_home, home_odds, fair[0]),
-            ("Draw", "Draw", pred.p_draw, draw_odds, fair[1]),
-            ("Away", away_team, pred.p_away, away_odds, fair[2]),
+            ("Home", home_team, pred.p_home, home_odds, fair[0], "h2h"),
+            ("Draw", "Draw", pred.p_draw, draw_odds, fair[1], "h2h"),
+            ("Away", away_team, pred.p_away, away_odds, fair[2], "h2h"),
         ]
 
-        for label, outcome_name, model_prob, odds_tuple, fair_prob in outcomes:
+        # Totals rows — only added if both Over 2.5 and Under 2.5 odds are available
+        over_odds = best_odds_for_outcome(fixture, "totals", "Over", point=2.5)
+        under_odds = best_odds_for_outcome(fixture, "totals", "Under", point=2.5)
+        if over_odds and under_odds and pred.p_over_2_5 is not None:
+            # Clamp to [0, 1] — calibrated classifiers can produce tiny noise outside the range
+            p_over = max(0.0, min(1.0, pred.p_over_2_5))
+            implied_totals = [1 / over_odds[0], 1 / under_odds[0]]
+            fair_totals = remove_bookmaker_margin(implied_totals)
+            outcomes.append(("Over 2.5", "Over 2.5", p_over, over_odds, fair_totals[0], "totals"))
+            outcomes.append(
+                (
+                    "Under 2.5",
+                    "Under 2.5",
+                    1 - p_over,
+                    under_odds,
+                    fair_totals[1],
+                    "totals",
+                )
+            )
+
+        for label, outcome_name, model_prob, odds_tuple, fair_prob, market in outcomes:
             decimal_odds, book = odds_tuple
             assessment = assess_value(
                 model_prob=model_prob,
@@ -147,12 +167,12 @@ def _build_rows(
                     "kickoff": fixture.get("commence_time", ""),
                     "home_team": home_team,
                     "away_team": away_team,
-                    "market": "h2h",
+                    "market": market,
                     "outcome": label,
                     "outcome_label": outcome_name,
                     "Match": f"{home_team} vs {away_team}",
                     "Kickoff": (fixture.get("commence_time", "")[:16] or "").replace("T", " "),
-                    "Bet": f"{label}: {outcome_name}",
+                    "Bet": f"{label}: {outcome_name}" if market == "h2h" else label,
                     "Model %": f"{model_prob * 100:.1f}%",
                     "Fair %": f"{fair_prob * 100:.1f}%",
                     "Best odds": f"{decimal_odds:.2f}",
