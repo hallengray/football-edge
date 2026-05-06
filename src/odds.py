@@ -1,41 +1,42 @@
-"""The Odds API client.
+"""The Odds API client - Big-5 European leagues.
 
-Fetches upcoming Premier League fixtures and bookmaker odds.
-Free tier at https://the-odds-api.com gives 500 requests/month — plenty for
-weekly checks.
+Fetches upcoming fixtures with bookmaker odds for all five leagues. Each league
+is one API request; per-league failures are graceful (skip that league, return
+others). The dashboard's @st.cache_data wraps the call to manage the 500/month
+free-tier quota.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
 import requests
 
+logger = logging.getLogger(__name__)
+
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 
+# Map our internal league key -> The Odds API sport_key
+LEAGUE_ENDPOINTS: dict[str, str] = {
+    "epl": "soccer_epl",
+    "laliga": "soccer_spain_la_liga",
+    "seriea": "soccer_italy_serie_a",
+    "bundesliga": "soccer_germany_bundesliga",
+    "ligue1": "soccer_france_ligue_one",
+}
 
-def get_epl_odds(
-    api_key: str | None = None,
+
+def _fetch_one_league(
+    sport_key: str,
+    api_key: str,
+    *,
     markets: str = "h2h,totals",
     regions: str = "uk",
 ) -> list[dict[str, Any]]:
-    """Fetch upcoming EPL fixtures with bookmaker odds.
-
-    Args:
-        api_key: The Odds API key. Defaults to the ODDS_API_KEY env var.
-        markets: Comma-separated markets — "h2h" is 1X2, "totals" is over/under.
-        regions: Bookmaker regions — "uk" for UK books, "eu" for European, "us" for US.
-
-    Returns:
-        List of fixture dicts. Each has `home_team`, `away_team`, `commence_time`,
-        and a `bookmakers` array with their offered odds.
-    """
-    api_key = api_key or os.getenv("ODDS_API_KEY")
-    if not api_key:
-        raise ValueError("ODDS_API_KEY is not set. Add it to your .env file.")
-
-    url = f"{ODDS_API_BASE}/sports/soccer_epl/odds"
+    """Single Odds API call for one league. Raises on HTTP error."""
+    url = f"{ODDS_API_BASE}/sports/{sport_key}/odds"
     params = {
         "apiKey": api_key,
         "regions": regions,
@@ -43,10 +44,41 @@ def get_epl_odds(
         "oddsFormat": "decimal",
         "dateFormat": "iso",
     }
-
     response = requests.get(url, params=params, timeout=15)
     response.raise_for_status()
     return response.json()
+
+
+def get_big5_odds(
+    api_key: str | None = None,
+    markets: str = "h2h,totals",
+    regions: str = "uk",
+) -> list[dict[str, Any]]:
+    """Fetch fixtures + odds for all 5 leagues. Tags each fixture with `league` key.
+
+    Per-league failures are graceful - that league's fixtures are simply absent
+    from the returned list. A warning is logged. This differs from training
+    policy (where any failure fails the whole run); runtime fetches are best-effort.
+    """
+    api_key = api_key or os.getenv("ODDS_API_KEY")
+    if not api_key:
+        raise ValueError("ODDS_API_KEY is not set. Add it to your .env file.")
+
+    fixtures: list[dict[str, Any]] = []
+    for league, sport_key in LEAGUE_ENDPOINTS.items():
+        try:
+            league_fixtures = _fetch_one_league(
+                sport_key, api_key, markets=markets, regions=regions
+            )
+            for fixture in league_fixtures:
+                fixture["league"] = league
+            fixtures.extend(league_fixtures)
+        except requests.RequestException as e:
+            logger.warning(
+                f"Failed to fetch {league} ({sport_key}): {e}; continuing with other leagues",
+                exc_info=True,
+            )
+    return fixtures
 
 
 def best_odds_for_outcome(
@@ -58,8 +90,8 @@ def best_odds_for_outcome(
     """Find the best (highest) odds across all bookmakers for a given outcome.
 
     Args:
-        fixture: A fixture dict from get_epl_odds().
-        market: Market key — "h2h" or "totals".
+        fixture: A fixture dict from get_big5_odds().
+        market: Market key - "h2h" or "totals".
         outcome_name: For h2h: home team name, away team name, or "Draw".
                       For totals: "Over" or "Under" (point comes from the `point` arg).
         point: Optional totals line filter (e.g. 2.5). When set, only outcomes whose
@@ -91,3 +123,14 @@ def best_odds_for_outcome(
     if best_price is None or best_book is None:
         return None
     return best_price, best_book
+
+
+# Backwards-compat shim: app.py uses get_epl_odds() today; keep it as an alias
+# that filters get_big5_odds() to EPL. Removed in Task 14 alongside dashboard work.
+def get_epl_odds(
+    api_key: str | None = None,
+    markets: str = "h2h,totals",
+    regions: str = "uk",
+) -> list[dict[str, Any]]:
+    """Deprecated: use get_big5_odds() and filter to league=='epl'."""
+    return [f for f in get_big5_odds(api_key, markets, regions) if f.get("league") == "epl"]
