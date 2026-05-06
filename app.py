@@ -156,7 +156,15 @@ def _build_rows(
     kelly_mult: float,
     models: Models,
 ) -> list[dict]:
-    """Cross-reference predictions with bookmaker odds, return display rows."""
+    """Cross-reference predictions with bookmaker odds, return display rows.
+
+    Args:
+        fixtures: Raw fixture dicts from the Odds API.
+        threshold: Minimum edge fraction to flag as a value bet.
+        kelly_mult: Kelly fraction multiplier for stake sizing.
+        models: Loaded model container; predictions go through `predict_fixture`,
+            which falls back to demo mode if `models.is_ready` is False.
+    """
     rows: list[dict] = []
 
     for fixture in fixtures:

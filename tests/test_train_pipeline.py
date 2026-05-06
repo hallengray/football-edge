@@ -39,8 +39,9 @@ def test_atomic_write_no_partial_state_when_pickle_fails(tmp_path, monkeypatch) 
     monkeypatch.setattr("scripts.train_model.LOADER_PATH", tmp_path / "epl_loader.pkl")
     monkeypatch.setattr("scripts.train_model.BACKTEST_PATH", tmp_path / "backtest.json")
 
-    # An object that throws on pickle.dump — TypeError is what pickle raises for
-    # unpicklable objects like local lambdas
+    # Simulate a non-picklable object by raising TypeError from __reduce__.
+    # (Real pickle failures usually raise pickle.PicklingError; we use TypeError
+    # here to keep the assertion target distinct.)
     class Unpicklable:
         def __reduce__(self):
             raise TypeError("nope")

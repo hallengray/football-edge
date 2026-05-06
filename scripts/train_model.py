@@ -39,8 +39,11 @@ def write_artifacts_atomically(
 ) -> None:
     """Write all three artifacts to .tmp paths, then os.replace to final names.
 
-    Either all three end up at their final paths, or none do. Cleans up .tmp
-    files on any failure.
+    All three writes are staged to .tmp paths first; if any write fails, cleanup
+    runs and none are promoted. The three os.replace calls are sequential, so a
+    hard crash (power cut, OS kill) BETWEEN them could in theory leave a partial
+    final state — vanishingly unlikely on a single-user local tool, but worth
+    knowing. Cleans up orphaned .tmp files on any failure.
     """
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 

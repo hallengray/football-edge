@@ -25,6 +25,10 @@ from typing import Any
 
 import pandas as pd
 
+# KeyError from to_library is intentionally caught by predict_fixture's outer
+# except — unmapped teams fall back to demo mode for that fixture only.
+from src.team_names import to_library
+
 logger = logging.getLogger(__name__)
 
 MODELS_DIR = Path(__file__).parent.parent / "models"
@@ -53,6 +57,8 @@ class Models:
     bettor: Any | None
     loader: Any | None
     backtest: dict | None
+    # Populated on first predict_fixture call as a session cache; persists for
+    # the lifetime of the cached Models instance (see st.cache_resource in app.py).
     fixtures_df: pd.DataFrame | None = field(default=None)
 
     @property
@@ -113,8 +119,6 @@ def predict_fixture(
         return _demo_prediction(home_team, away_team)
 
     try:
-        from src.team_names import to_library
-
         home_lib = to_library(home_team)
         away_lib = to_library(away_team)
 
@@ -132,6 +136,8 @@ def predict_fixture(
             )
             return _demo_prediction(home_team, away_team)
 
+        # Double brackets (iloc[[0]]) keeps the result a 1-row DataFrame instead of a
+        # Series — predict_proba expects a DataFrame for column-name preservation.
         probs = models.bettor.predict_proba(match.iloc[[0]])[0]
 
         return MatchPrediction(
@@ -144,7 +150,10 @@ def predict_fixture(
             is_demo=False,
         )
     except Exception as e:
-        logger.warning(f"Real-model inference failed for {home_team} vs {away_team}: {e}")
+        logger.warning(
+            f"Real-model inference failed for {home_team} vs {away_team}: {e}",
+            exc_info=True,
+        )
         return _demo_prediction(home_team, away_team)
 
 
