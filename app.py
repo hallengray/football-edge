@@ -22,13 +22,21 @@ from src.database import (
     record_bet,
     record_outcome,
 )
-from src.odds import best_odds_for_outcome, get_epl_odds
+from src.odds import best_odds_for_outcome, get_big5_odds
 from src.predictions import Models, load_models, predict_fixture
 from src.value import assess_value, remove_bookmaker_margin
 
 logger = logging.getLogger(__name__)
 
 load_dotenv()
+
+LEAGUE_DISPLAY_NAMES: dict[str, str] = {
+    "epl": "EPL",
+    "laliga": "La Liga",
+    "seriea": "Serie A",
+    "bundesliga": "Bundesliga",
+    "ligue1": "Ligue 1",
+}
 
 st.set_page_config(
     page_title="Football Edge",
@@ -75,20 +83,28 @@ def render_model_info(models: Models) -> None:
     n_matches = bt.get("n_training_matches", "?")
     seasons = bt.get("training_seasons", [])
     seasons_str = f"{len(seasons)} seasons" if seasons else "unknown seasons"
+    leagues_data = bt.get("leagues", {})
 
     with st.expander("📊 Model info", expanded=False):
         st.markdown(
             f"**Trained:** {stale_marker}{trained_at_str[:10]}{age_days_str}  \n"
-            f"**Data:** {seasons_str}, {n_matches} matches"
+            f"**Data:** {seasons_str}, {n_matches} matches across {len(leagues_data)} leagues"
         )
-        st.markdown("**Per-market backtest results:**")
-        markets = bt.get("markets", {})
-        for market_key in ["home_win", "draw", "away_win", "over_2.5", "under_2.5"]:
-            stats = markets.get(market_key, {})
-            n = stats.get("n_bets", 0)
-            yp = stats.get("yield_pct", 0.0)
-            label = market_key.replace("_", " ").title()
-            st.markdown(f"- **{label}**: {n} bets, {yp:+.1f}% yield")
+        st.markdown("**Per-market backtest yields by league:**")
+
+        rows = []
+        for league_key, league_summary in leagues_data.items():
+            row = {"League": LEAGUE_DISPLAY_NAMES.get(league_key, league_key)}
+            markets = league_summary.get("markets", {})
+            for market_key in ["home_win", "draw", "away_win", "over_2.5", "under_2.5"]:
+                stats = markets.get(market_key, {})
+                yp = stats.get("yield_pct", 0.0)
+                n = stats.get("n_bets", 0)
+                row[market_key.replace("_", " ").title()] = f"{yp:+.1f}% ({n})"
+            rows.append(row)
+        if rows:
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
         if stale_marker:
             st.caption("Model is over 90 days old — consider retraining.")
 
@@ -129,9 +145,9 @@ with st.sidebar:
 # ───── Demo mode banner ─────
 if not _models.is_ready:
     st.warning(
-        "🟡 **Demo mode** — no trained model found. The probabilities shown are "
-        "synthetic and **not predictive**. Wire up `scripts/train_model.py` and "
-        "run `uv run python scripts/train_model.py` to use a real model."
+        "🟡 **Demo mode** — no trained models found. The probabilities shown are "
+        "synthetic and **not predictive**. Run `uv run python scripts/train_model.py` "
+        "to train all 5 leagues' models."
     )
 
 # ───── Tabs ─────
@@ -143,10 +159,10 @@ tab_fixtures, tab_tracking = st.tabs(["📊 This Week", "📈 Tracking"])
 # ─────────────────────────────────────────────────────────────────────
 
 
-@st.cache_data(ttl=600, show_spinner="Pulling fixtures and odds…")
+@st.cache_data(ttl=1800, show_spinner="Pulling fixtures and odds…")
 def _fetch_fixtures() -> list[dict]:
-    """Pull EPL fixtures + bookmaker odds. Cached for 10 minutes."""
-    return get_epl_odds()
+    """Pull Big-5 fixtures + bookmaker odds. Cached for 30 min (manages 500/month free quota)."""
+    return get_big5_odds()
 
 
 def _build_rows(
@@ -172,7 +188,9 @@ def _build_rows(
         if not home_team or not away_team:
             continue
 
-        pred = predict_fixture(models, home_team, away_team)
+        # default to epl for legacy fixtures missing the field
+        league = fixture.get("league", "epl")
+        pred = predict_fixture(models, league, home_team, away_team)
 
         home_odds = best_odds_for_outcome(fixture, "h2h", home_team)
         away_odds = best_odds_for_outcome(fixture, "h2h", away_team)
@@ -229,6 +247,7 @@ def _build_rows(
                     "market": market,
                     "outcome": label,
                     "outcome_label": outcome_name,
+                    "League": LEAGUE_DISPLAY_NAMES.get(league, league),
                     "Match": f"{home_team} vs {away_team}",
                     "Kickoff": (fixture.get("commence_time", "")[:16] or "").replace("T", " "),
                     "Bet": f"{label}: {outcome_name}" if market == "h2h" else label,
@@ -275,6 +294,7 @@ def render_fixtures_tab() -> None:
 
     df = pd.DataFrame(rows)
     display_cols = [
+        "League",
         "Match",
         "Kickoff",
         "Bet",
@@ -285,6 +305,14 @@ def render_fixtures_tab() -> None:
         "Edge",
         "Kelly stake",
     ]
+
+    selected_leagues = st.multiselect(
+        "Leagues",
+        options=list(LEAGUE_DISPLAY_NAMES.values()),
+        default=list(LEAGUE_DISPLAY_NAMES.values()),
+        help="Hide leagues you don't want to see.",
+    )
+    df = df[df["League"].isin(selected_leagues)]
 
     value_df = df[df["_is_value"]].sort_values("_value_pct", ascending=False)
     other_df = df[~df["_is_value"]]
