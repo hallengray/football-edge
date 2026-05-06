@@ -176,16 +176,3 @@ def _demo_prediction(home_team: str, away_team: str) -> MatchPrediction:
         p_over_2_5=p_over_2_5,
         is_demo=True,
     )
-
-
-# ─── Compatibility shims (removed in Task 10 alongside app.py changes) ───
-
-
-def model_exists() -> bool:
-    """Deprecated: use Models.is_ready via load_models()."""
-    return BETTOR_PATH.exists() and LOADER_PATH.exists() and BACKTEST_PATH.exists()
-
-
-def load_model() -> Any | None:
-    """Deprecated: use load_models()."""
-    return _safe_unpickle(BETTOR_PATH)

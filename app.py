@@ -3,6 +3,7 @@
 Run locally:    uv run streamlit run app.py
 Deploy:         push to GitHub, connect to Streamlit Community Cloud
 """
+
 from __future__ import annotations
 
 import os
@@ -21,7 +22,7 @@ from src.database import (
     record_outcome,
 )
 from src.odds import best_odds_for_outcome, get_epl_odds
-from src.predictions import load_model, model_exists, predict_fixture
+from src.predictions import Models, load_models, predict_fixture
 from src.value import assess_value, remove_bookmaker_margin
 
 load_dotenv()
@@ -65,8 +66,17 @@ with st.sidebar:
     )
     st.caption("[BeGambleAware](https://www.begambleaware.org)")
 
+
+# ───── Models loader (cached for the session) ─────
+@st.cache_resource(show_spinner="Loading model…")
+def _load_models_cached() -> Models:
+    return load_models()
+
+
+_models = _load_models_cached()
+
 # ───── Demo mode banner ─────
-if not model_exists():
+if not _models.is_ready:
     st.warning(
         "🟡 **Demo mode** — no trained model found. The probabilities shown are "
         "synthetic and **not predictive**. Wire up `scripts/train_model.py` and "
@@ -92,9 +102,9 @@ def _build_rows(
     fixtures: list[dict],
     threshold: float,
     kelly_mult: float,
+    models: Models,
 ) -> list[dict]:
     """Cross-reference predictions with bookmaker odds, return display rows."""
-    model = load_model()  # None in demo mode
     rows: list[dict] = []
 
     for fixture in fixtures:
@@ -103,7 +113,7 @@ def _build_rows(
         if not home_team or not away_team:
             continue
 
-        pred = predict_fixture(model, home_team, away_team)
+        pred = predict_fixture(models, home_team, away_team)
 
         home_odds = best_odds_for_outcome(fixture, "h2h", home_team)
         away_odds = best_odds_for_outcome(fixture, "h2h", away_team)
@@ -141,9 +151,7 @@ def _build_rows(
                     "outcome": label,
                     "outcome_label": outcome_name,
                     "Match": f"{home_team} vs {away_team}",
-                    "Kickoff": (fixture.get("commence_time", "")[:16] or "").replace(
-                        "T", " "
-                    ),
+                    "Kickoff": (fixture.get("commence_time", "")[:16] or "").replace("T", " "),
                     "Bet": f"{label}: {outcome_name}",
                     "Model %": f"{model_prob * 100:.1f}%",
                     "Fair %": f"{fair_prob * 100:.1f}%",
@@ -181,7 +189,7 @@ def render_fixtures_tab() -> None:
         st.info("No upcoming fixtures with odds available right now.")
         return
 
-    rows = _build_rows(fixtures, value_threshold, kelly_multiplier)
+    rows = _build_rows(fixtures, value_threshold, kelly_multiplier, _models)
     if not rows:
         st.info("No fixtures returned predictions.")
         return
@@ -313,9 +321,7 @@ def render_tracking_tab() -> None:
             pending.append(b)
 
     total_staked = sum(float(b["stake_amount"]) for b in settled)
-    total_returned = sum(
-        float((b.get("outcomes") or [{}])[0].get("payout", 0)) for b in settled
-    )
+    total_returned = sum(float((b.get("outcomes") or [{}])[0].get("payout", 0)) for b in settled)
     pnl = total_returned - total_staked
     roi = (pnl / total_staked * 100) if total_staked > 0 else 0
     wins = sum(1 for b in settled if (b.get("outcomes") or [{}])[0].get("won"))
