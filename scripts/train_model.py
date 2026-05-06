@@ -104,10 +104,12 @@ def run_backtest(
     SoccerDataLoader) explicitly so that backtest.json reports the actual seasons,
     not a hardcoded list.
     """
-    import sportsbet
+    from importlib.metadata import version as pkg_version
+
     from sportsbet.evaluation import backtest as library_backtest
 
     bt_df: pd.DataFrame = library_backtest(bettor, X, Y, O)
+    library_version = pkg_version("sports-betting")
 
     markets = ["home_win", "draw", "away_win", "over_2.5", "under_2.5"]
     market_summary: dict[str, dict[str, float]] = {}
@@ -145,7 +147,7 @@ def run_backtest(
     return {
         "trained_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
         "training_seasons": list(training_years),
-        "library_version": sportsbet.__version__,
+        "library_version": library_version,
         "n_training_matches": int(len(X)),
         "y_columns_order": list(Y.columns),  # locked for inference index mapping
         "markets": market_summary,
