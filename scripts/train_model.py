@@ -15,11 +15,15 @@ overwritten if the entire run succeeds (atomic write).
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import pickle
+import sys
 from pathlib import Path
 from typing import Any
+
+import pandas as pd
 
 ROOT = Path(__file__).parent.parent
 MODELS_DIR = ROOT / "models"
@@ -68,8 +72,73 @@ def write_artifacts_atomically(
         raise
 
 
-def run_backtest(bettor, X, Y, O) -> dict:  # noqa: E741 — capital O matches library convention
-    raise NotImplementedError("Implemented in Task 8")
+def run_backtest(
+    bettor,
+    X,
+    Y,
+    O,  # noqa: E741 — capital O matches library convention
+    *,
+    training_years: list[int],
+) -> dict:
+    """Run library backtest and reduce per-market columns into a JSON-ready summary.
+
+    Library's `backtest()` returns a DataFrame indexed by training-window start date
+    with per-market columns like:
+        Yield percentage per bet (home_win__full_time_goals)
+        Number of bets (home_win__full_time_goals)
+        Precision per bet (home_win__full_time_goals)
+
+    We aggregate those across rows to produce one summary block per market.
+    The caller must pass `training_years` (the list of seasons used by the SoccerDataLoader)
+    explicitly so that backtest.json reports the actual seasons, not a hardcoded list.
+    """
+    import sportsbet
+    from sportsbet.evaluation import backtest as library_backtest
+
+    bt_df: pd.DataFrame = library_backtest(bettor, X, Y, O)
+
+    markets = ["home_win", "draw", "away_win", "over_2.5", "under_2.5"]
+    market_summary: dict[str, dict[str, float]] = {}
+
+    for m in markets:
+        col_market = f"{m}__full_time_goals"
+        n_bets_col = f"Number of bets ({col_market})"
+        win_rate_col = f"Precision per bet ({col_market})"
+        yield_col = f"Yield percentage per bet ({col_market})"
+
+        if n_bets_col not in bt_df.columns:
+            print(
+                f"[warn] backtest column not found for market {m!r} "
+                f"(expected '{n_bets_col}'); recording zeros. "
+                f"Library naming may have changed.",
+                file=sys.stderr,
+            )
+            market_summary[m] = {"n_bets": 0, "win_rate": 0.0, "yield_pct": 0.0}
+            continue
+
+        total_bets = int(bt_df[n_bets_col].sum())
+        # Average win rate weighted by number of bets per row
+        if total_bets > 0:
+            weighted_win = (bt_df[win_rate_col] * bt_df[n_bets_col]).sum() / total_bets
+            weighted_yield = (bt_df[yield_col] * bt_df[n_bets_col]).sum() / total_bets
+        else:
+            weighted_win = 0.0
+            weighted_yield = 0.0
+
+        market_summary[m] = {
+            "n_bets": total_bets,
+            "win_rate": float(weighted_win),
+            "yield_pct": float(weighted_yield),
+        }
+
+    return {
+        "trained_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+        "training_seasons": list(training_years),
+        "library_version": sportsbet.__version__,
+        "n_training_matches": int(len(X)),
+        "y_columns_order": list(Y.columns),  # locked for inference index mapping
+        "markets": market_summary,
+    }
 
 
 def main() -> None:
