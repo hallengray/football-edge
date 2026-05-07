@@ -15,9 +15,21 @@ import pandas as pd
 import requests
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = "openai/gpt-oss-120b:free"
+DEFAULT_MODEL = "nvidia/nemotron-3-nano-30b-a3b:free"
 REQUEST_TIMEOUT = 30
-TEMPERATURE = 0.2
+# Temperature 0 maximises determinism, which matters because:
+# (a) ranking the same value bets twice should produce the same picks,
+# (b) free-tier models drift from the JSON schema at higher temperatures.
+TEMPERATURE = 0.0
+# Cap the value-bets table sent to the model at top-N by edge. Free-tier models
+# emit malformed JSON when their response gets too long (observed with
+# gpt-oss-120b: mismatched closing quotes once output exceeded ~2KB). Since
+# value_bets_df arrives sorted by _value_pct desc, head(MAX_PROMPT_BETS) keeps
+# the 50 highest-edge candidates -- the only ones that could plausibly make
+# the top 10. Caller's render flow uses iloc[pick_id] against the un-capped
+# DataFrame, and head() preserves the leading indices, so the mapping stays
+# valid.
+MAX_PROMPT_BETS = 50
 
 # Maps the model's snake_case league keys to display names used in the prompt.
 LEAGUE_DISPLAY = {
@@ -155,6 +167,9 @@ def explain_top_picks(
 
     if value_bets_df.empty:
         return ExplainerResult(picks=[], error=None)
+
+    if len(value_bets_df) > MAX_PROMPT_BETS:
+        value_bets_df = value_bets_df.head(MAX_PROMPT_BETS)
 
     model = os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL)
     user_prompt = _build_user_prompt(value_bets_df, backtest_summary)
