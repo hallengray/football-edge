@@ -159,3 +159,16 @@ def test_handles_429_rate_limit_gracefully(monkeypatch) -> None:
     assert result.picks == []
     assert result.error is not None
     assert "OpenRouter returned 429" in result.error
+
+
+def test_handles_empty_choices_array_gracefully(monkeypatch) -> None:
+    """OpenRouter sometimes returns {"choices": []} on safety refusals; must not crash."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+
+    with requests_mock.Mocker() as m:
+        m.post(OPENROUTER_URL, json={"choices": []}, status_code=200)
+        result = explain_top_picks(SAMPLE_VALUE_DF, SAMPLE_BACKTEST)
+
+    assert result.picks == []
+    assert result.error is not None
+    assert "AI returned unexpected response" in result.error

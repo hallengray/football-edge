@@ -186,7 +186,7 @@ def explain_top_picks(
     try:
         api_response = response.json()
         picks = _parse_picks(api_response)
-    except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
+    except (json.JSONDecodeError, KeyError, ValueError, TypeError, IndexError) as e:
         return ExplainerResult(
             picks=[],
             error=f"AI returned unexpected response ({type(e).__name__}). Click again to retry.",
