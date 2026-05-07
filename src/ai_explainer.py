@@ -15,7 +15,7 @@ import pandas as pd
 import requests
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = "google/gemini-2.5-flash:free"
+DEFAULT_MODEL = "openai/gpt-oss-120b:free"
 REQUEST_TIMEOUT = 30
 TEMPERATURE = 0.2
 
