@@ -15,8 +15,6 @@ other Big-5 leagues. Additional teams are added during the smoke test (Task 16)
 by running training and adding any KeyError that surfaces. Self-healing pattern.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 VALID_SOURCES = ("odds_api", "football_data", "understat")
