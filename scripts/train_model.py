@@ -276,13 +276,30 @@ def _split_by_league(features_df: pd.DataFrame, league: str):
         }
     )
 
-    # X = features only -- drop the outcome columns, odds columns, and any raw
-    # post-match observable still in the frame. The mirror's `target__*` columns
-    # (full-time goals, shots, SoT, corners, cards) are populated for training rows
-    # but absent for upcoming-fixture rows; including them in X causes target
-    # leakage at training that vanishes at predict time. HST/AST are renamed
-    # post-match observables fed only into the rolling shooting features.
-    drop_cols = ["FTHG", "FTAG", "FTR", "HTHG", "HTAG", "HTR", "HST", "AST"]
+    # X = features only -- drop the outcome columns, odds columns, post-match
+    # observables, and the date column. Reasoning:
+    #
+    # - `date`: a pd.Timestamp; SimpleImputer can't take the mean of timestamps.
+    #   Temporal context is captured by `year` and by the rolling features.
+    # - `target__*`: post-match observables (goals, shots, SoT, corners, cards)
+    #   populated at training but NaN at predict time -> silent leakage. Their
+    #   only purpose is feeding the rolling-shifted derivatives.
+    # - HST/AST: renamed post-match observables, same leakage class as target__.
+    # - `home_xg`/`away_xg`: per-match Understat xG, post-match observable.
+    #   Only their rolling-shifted versions belong in X.
+    drop_cols = [
+        "date",
+        "FTHG",
+        "FTAG",
+        "FTR",
+        "HTHG",
+        "HTAG",
+        "HTR",
+        "HST",
+        "AST",
+        "home_xg",
+        "away_xg",
+    ]
     feature_cols = [
         c
         for c in df.columns

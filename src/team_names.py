@@ -45,7 +45,7 @@ REGISTRY: dict[str, TeamNames] = {
     # ─── EPL (current season) ─────────────────────────────────────────
     "Arsenal": _entry("Arsenal", "Arsenal", "Arsenal", "Arsenal"),
     "Aston Villa": _entry("Aston Villa", "Aston Villa", "Aston Villa", "Aston Villa"),
-    "Bournemouth": _entry("Bournemouth", "AFC Bournemouth", "Bournemouth", "Bournemouth"),
+    "Bournemouth": _entry("Bournemouth", "Bournemouth", "Bournemouth", "Bournemouth"),
     "Brentford": _entry("Brentford", "Brentford", "Brentford", "Brentford"),
     "Brighton": _entry("Brighton", "Brighton and Hove Albion", "Brighton", "Brighton"),
     "Burnley": _entry("Burnley", "Burnley", "Burnley", "Burnley"),
@@ -88,7 +88,7 @@ REGISTRY: dict[str, TeamNames] = {
     "Real Madrid": _entry("Real Madrid", "Real Madrid", "Real Madrid", "Real Madrid"),
     "Barcelona": _entry("Barcelona", "Barcelona", "Barcelona", "Barcelona"),
     "Atletico Madrid": _entry(
-        "Atletico Madrid", "Atletico Madrid", "Ath Madrid", "Atletico Madrid"
+        "Atletico Madrid", "Atlético Madrid", "Ath Madrid", "Atletico Madrid"
     ),
     "Sevilla": _entry("Sevilla", "Sevilla", "Sevilla", "Sevilla"),
     "Real Sociedad": _entry("Real Sociedad", "Real Sociedad", "Sociedad", "Real Sociedad"),
@@ -96,12 +96,12 @@ REGISTRY: dict[str, TeamNames] = {
     "Athletic Bilbao": _entry("Athletic Bilbao", "Athletic Bilbao", "Ath Bilbao", "Athletic Club"),
     "Real Betis": _entry("Real Betis", "Real Betis", "Betis", "Real Betis"),
     "Valencia": _entry("Valencia", "Valencia", "Valencia", "Valencia"),
-    "Alaves": _entry("Alaves", "Alaves", "Alaves", "Alaves"),
+    "Alaves": _entry("Alaves", "Alavés", "Alaves", "Alaves"),
     "Almeria": _entry("Almeria", "Almeria", "Almeria", "Almeria"),
     "Cadiz": _entry("Cadiz", "Cadiz", "Cadiz", "Cadiz"),
     "Celta Vigo": _entry("Celta Vigo", "Celta Vigo", "Celta", "Celta Vigo"),
     "Eibar": _entry("Eibar", "Eibar", "Eibar", "Eibar"),
-    "Elche": _entry("Elche", "Elche", "Elche", "Elche"),
+    "Elche": _entry("Elche", "Elche CF", "Elche", "Elche"),
     "Espanyol": _entry("Espanyol", "Espanyol", "Espanol", "Espanyol"),
     "Getafe": _entry("Getafe", "Getafe", "Getafe", "Getafe"),
     "Girona": _entry("Girona", "Girona", "Girona", "Girona"),
@@ -115,8 +115,8 @@ REGISTRY: dict[str, TeamNames] = {
     "Levante": _entry("Levante", "Levante", "Levante", "Levante"),
     "Malaga": _entry("Malaga", "Malaga", "Malaga", "Malaga"),
     "Mallorca": _entry("Mallorca", "Mallorca", "Mallorca", "Mallorca"),
-    "Osasuna": _entry("Osasuna", "Osasuna", "Osasuna", "Osasuna"),
-    "Real Oviedo": _entry("Real Oviedo", "Real Oviedo", "Oviedo", "Real Oviedo"),
+    "Osasuna": _entry("Osasuna", "CA Osasuna", "Osasuna", "Osasuna"),
+    "Real Oviedo": _entry("Real Oviedo", "Oviedo", "Oviedo", "Real Oviedo"),
     "Valladolid": _entry("Valladolid", "Real Valladolid", "Valladolid", "Real Valladolid"),
     "Rayo Vallecano": _entry("Rayo Vallecano", "Rayo Vallecano", "Vallecano", "Rayo Vallecano"),
     # ─── Serie A (top clubs — seed) ─────────────────────────────────────
@@ -126,7 +126,7 @@ REGISTRY: dict[str, TeamNames] = {
     "Napoli": _entry("Napoli", "Napoli", "Napoli", "Napoli"),
     "Roma": _entry("Roma", "AS Roma", "Roma", "Roma"),
     "Lazio": _entry("Lazio", "Lazio", "Lazio", "Lazio"),
-    "Atalanta": _entry("Atalanta", "Atalanta", "Atalanta", "Atalanta"),
+    "Atalanta": _entry("Atalanta", "Atalanta BC", "Atalanta", "Atalanta"),
     "Fiorentina": _entry("Fiorentina", "Fiorentina", "Fiorentina", "Fiorentina"),
     "Benevento": _entry("Benevento", "Benevento", "Benevento", "Benevento"),
     "Bologna": _entry("Bologna", "Bologna", "Bologna", "Bologna"),
@@ -165,7 +165,7 @@ REGISTRY: dict[str, TeamNames] = {
         "Eintracht Frankfurt", "Eintracht Frankfurt", "Ein Frankfurt", "Eintracht Frankfurt"
     ),
     "Wolfsburg": _entry("Wolfsburg", "VfL Wolfsburg", "Wolfsburg", "Wolfsburg"),
-    "Augsburg": _entry("Augsburg", "FC Augsburg", "Augsburg", "Augsburg"),
+    "Augsburg": _entry("Augsburg", "Augsburg", "Augsburg", "Augsburg"),
     "Arminia Bielefeld": _entry(
         "Arminia Bielefeld", "Arminia Bielefeld", "Bielefeld", "Arminia Bielefeld"
     ),
@@ -177,7 +177,7 @@ REGISTRY: dict[str, TeamNames] = {
         "Fortuna Dusseldorf",
         "Fortuna Duesseldorf",
     ),
-    "FC Koln": _entry("FC Koln", "FC Cologne", "FC Koln", "FC Cologne"),
+    "FC Koln": _entry("FC Koln", "1. FC Köln", "FC Koln", "FC Cologne"),
     "Freiburg": _entry("Freiburg", "SC Freiburg", "Freiburg", "Freiburg"),
     "Greuther Furth": _entry(
         "Greuther Furth", "Greuther Furth", "Greuther Furth", "Greuther Fuerth"
@@ -188,7 +188,7 @@ REGISTRY: dict[str, TeamNames] = {
     "Hertha Berlin": _entry("Hertha Berlin", "Hertha Berlin", "Hertha", "Hertha Berlin"),
     "Hoffenheim": _entry("Hoffenheim", "TSG Hoffenheim", "Hoffenheim", "Hoffenheim"),
     "Holstein Kiel": _entry("Holstein Kiel", "Holstein Kiel", "Holstein Kiel", "Holstein Kiel"),
-    "Mainz 05": _entry("Mainz 05", "FSV Mainz", "Mainz", "Mainz 05"),
+    "Mainz 05": _entry("Mainz 05", "FSV Mainz 05", "Mainz", "Mainz 05"),
     "Borussia Monchengladbach": _entry(
         "Borussia Monchengladbach",
         "Borussia Monchengladbach",
@@ -204,10 +204,10 @@ REGISTRY: dict[str, TeamNames] = {
     "Werder Bremen": _entry("Werder Bremen", "Werder Bremen", "Werder Bremen", "Werder Bremen"),
     # ─── Ligue 1 (top clubs — seed) ────────────────────────────────────
     "Paris Saint-Germain": _entry(
-        "Paris Saint-Germain", "Paris Saint-Germain", "Paris SG", "Paris Saint Germain"
+        "Paris Saint-Germain", "Paris Saint Germain", "Paris SG", "Paris Saint Germain"
     ),
     "Marseille": _entry("Marseille", "Marseille", "Marseille", "Marseille"),
-    "Monaco": _entry("Monaco", "Monaco", "Monaco", "Monaco"),
+    "Monaco": _entry("Monaco", "AS Monaco", "Monaco", "Monaco"),
     "Lyon": _entry("Lyon", "Lyon", "Lyon", "Lyon"),
     "Lille": _entry("Lille", "Lille", "Lille", "Lille"),
     "Nice": _entry("Nice", "Nice", "Nice", "Nice"),
@@ -217,13 +217,13 @@ REGISTRY: dict[str, TeamNames] = {
     "Angers": _entry("Angers", "Angers", "Angers", "Angers"),
     "Auxerre": _entry("Auxerre", "Auxerre", "Auxerre", "Auxerre"),
     "Bordeaux": _entry("Bordeaux", "Bordeaux", "Bordeaux", "Bordeaux"),
-    "Brest": _entry("Brest", "Stade Brestois", "Brest", "Brest"),
+    "Brest": _entry("Brest", "Brest", "Brest", "Brest"),
     "Caen": _entry("Caen", "Caen", "Caen", "Caen"),
     "Clermont Foot": _entry("Clermont Foot", "Clermont Foot", "Clermont", "Clermont Foot"),
     "Dijon": _entry("Dijon", "Dijon", "Dijon", "Dijon"),
     "Guingamp": _entry("Guingamp", "Guingamp", "Guingamp", "Guingamp"),
     "Le Havre": _entry("Le Havre", "Le Havre", "Le Havre", "Le Havre"),
-    "Lens": _entry("Lens", "Lens", "Lens", "Lens"),
+    "Lens": _entry("Lens", "RC Lens", "Lens", "Lens"),
     "Lorient": _entry("Lorient", "Lorient", "Lorient", "Lorient"),
     "Metz": _entry("Metz", "Metz", "Metz", "Metz"),
     "Montpellier": _entry("Montpellier", "Montpellier", "Montpellier", "Montpellier"),
