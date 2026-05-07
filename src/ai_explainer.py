@@ -10,9 +10,14 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
+from typing import Literal
 
 import pandas as pd
 import requests
+
+# Used by the dashboard renderer to dispatch to the right Streamlit visual
+# (st.info / st.error / st.warning) without sniffing the error message text.
+ErrorKind = Literal["config", "transport", "parse"]
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "nvidia/nemotron-3-nano-30b-a3b:free"
@@ -76,10 +81,17 @@ class Pick:
 
 @dataclass
 class ExplainerResult:
-    """Result of an AI explainer call. error is None on success or when value_df is empty."""
+    """Result of an AI explainer call. error is None on success or when value_df is empty.
+
+    error_kind, when set, classifies the failure for the renderer to dispatch on:
+    - "config": OPENROUTER_API_KEY missing -> Streamlit st.info
+    - "transport": network failure or non-200 status -> st.error
+    - "parse": valid HTTP response but unexpected body shape -> st.warning
+    """
 
     picks: list[Pick] = field(default_factory=list)
     error: str | None = None
+    error_kind: ErrorKind | None = None
 
 
 def _format_backtest(backtest: dict) -> str:
@@ -163,6 +175,7 @@ def explain_top_picks(
         return ExplainerResult(
             picks=[],
             error="Set OPENROUTER_API_KEY in .env to enable AI picks.",
+            error_kind="config",
         )
 
     if value_bets_df.empty:
@@ -196,6 +209,7 @@ def explain_top_picks(
         return ExplainerResult(
             picks=[],
             error=f"Couldn't reach OpenRouter: {e}. Try again in a minute.",
+            error_kind="transport",
         )
 
     if response.status_code != 200:
@@ -203,6 +217,7 @@ def explain_top_picks(
         return ExplainerResult(
             picks=[],
             error=f"OpenRouter returned {response.status_code}: {snippet}. Try again in a minute.",
+            error_kind="transport",
         )
 
     try:
@@ -212,6 +227,7 @@ def explain_top_picks(
         return ExplainerResult(
             picks=[],
             error=f"AI returned unexpected response ({type(e).__name__}). Click again to retry.",
+            error_kind="parse",
         )
 
     return ExplainerResult(picks=picks, error=None)

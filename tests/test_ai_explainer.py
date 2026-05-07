@@ -75,6 +75,7 @@ def test_returns_error_when_api_key_missing(monkeypatch) -> None:
     assert result.picks == []
     assert result.error is not None
     assert "OPENROUTER_API_KEY" in result.error
+    assert result.error_kind == "config"
 
 
 def test_returns_no_error_when_value_bets_empty(monkeypatch) -> None:
@@ -87,6 +88,7 @@ def test_returns_no_error_when_value_bets_empty(monkeypatch) -> None:
 
     assert result.picks == []
     assert result.error is None  # empty input is not an error
+    assert result.error_kind is None
 
 
 def test_returns_picks_when_api_responds_with_valid_json(monkeypatch) -> None:
@@ -159,6 +161,7 @@ def test_handles_429_rate_limit_gracefully(monkeypatch) -> None:
     assert result.picks == []
     assert result.error is not None
     assert "OpenRouter returned 429" in result.error
+    assert result.error_kind == "transport"
 
 
 def test_handles_empty_choices_array_gracefully(monkeypatch) -> None:
@@ -172,6 +175,7 @@ def test_handles_empty_choices_array_gracefully(monkeypatch) -> None:
     assert result.picks == []
     assert result.error is not None
     assert "AI returned unexpected response" in result.error
+    assert result.error_kind == "parse"
 
 
 def test_drops_picks_with_unknown_pick_id(monkeypatch) -> None:

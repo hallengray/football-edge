@@ -272,9 +272,10 @@ def _build_rows(
 def _render_ai_picks(result: ExplainerResult, value_df_reset: pd.DataFrame) -> None:
     """Render the AI explainer's output as banner + collapsible cards."""
     if result.error:
-        if "OPENROUTER_API_KEY" in result.error:
+        # Dispatch on the explainer's typed error_kind, not by sniffing substrings.
+        if result.error_kind == "config":
             st.info(result.error)
-        elif "OpenRouter returned" in result.error or "Couldn't reach" in result.error:
+        elif result.error_kind == "transport":
             st.error(result.error)
         else:
             st.warning(result.error)
