@@ -5,8 +5,6 @@ constrained system prompt that forces JSON output. Returns an ExplainerResult
 dataclass; never raises to the Streamlit caller.
 """
 
-from __future__ import annotations
-
 import json
 import os
 from dataclasses import dataclass, field

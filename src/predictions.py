@@ -10,8 +10,6 @@ Demo fallback for any error: missing bettor, unmapped team, no fixture row, libr
 exception during predict_proba.
 """
 
-from __future__ import annotations
-
 import hashlib
 import json
 import logging
