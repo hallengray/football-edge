@@ -10,5 +10,4 @@ models.v0_backup/
 .DS_Store
 *.egg-info/
 .ruff_cache/
-.python-version
 .claude/
