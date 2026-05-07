@@ -113,15 +113,22 @@ def _build_user_prompt(value_bets_df: pd.DataFrame, backtest: dict) -> str:
     )
 
 
-def _parse_picks(api_response: dict) -> list[Pick]:
-    """Pull the assistant's content out of the OpenRouter response and parse it as JSON."""
+def _parse_picks(api_response: dict, valid_ids: set[int]) -> list[Pick]:
+    """Pull the assistant's content out of the OpenRouter response and parse it as JSON.
+
+    Picks whose pick_id is not in valid_ids are dropped silently — defends against
+    the AI hallucinating row indices that don't exist in the value-bets table.
+    """
     content = api_response["choices"][0]["message"]["content"]
     parsed = json.loads(content)
     picks = []
     for raw in parsed["picks"]:
+        pick_id = int(raw["pick_id"])
+        if pick_id not in valid_ids:
+            continue
         picks.append(
             Pick(
-                pick_id=int(raw["pick_id"]),
+                pick_id=pick_id,
                 key_reason=str(raw["key_reason"]),
                 risk=str(raw["risk"]),
                 model_edge_pct=float(raw["model_edge_pct"]),
@@ -185,7 +192,7 @@ def explain_top_picks(
 
     try:
         api_response = response.json()
-        picks = _parse_picks(api_response)
+        picks = _parse_picks(api_response, valid_ids=set(value_bets_df.index))
     except (json.JSONDecodeError, KeyError, ValueError, TypeError, IndexError) as e:
         return ExplainerResult(
             picks=[],

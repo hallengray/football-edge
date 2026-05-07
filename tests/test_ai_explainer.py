@@ -172,3 +172,23 @@ def test_handles_empty_choices_array_gracefully(monkeypatch) -> None:
     assert result.picks == []
     assert result.error is not None
     assert "AI returned unexpected response" in result.error
+
+
+def test_drops_picks_with_unknown_pick_id(monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    # SAMPLE_VALUE_DF has indices [0, 1, 2]. AI fabricates pick_id 999.
+    inner_content = (
+        '{"picks": ['
+        '{"pick_id": 0, "key_reason": "real", "risk": "real", "model_edge_pct": 6.4},'
+        '{"pick_id": 999, "key_reason": "hallucinated", "risk": "fake", "model_edge_pct": 99.9},'
+        '{"pick_id": 2, "key_reason": "real", "risk": "real", "model_edge_pct": 5.2}'
+        "]}"
+    )
+    api_response = {"choices": [{"message": {"role": "assistant", "content": inner_content}}]}
+
+    with requests_mock.Mocker() as m:
+        m.post(OPENROUTER_URL, json=api_response, status_code=200)
+        result = explain_top_picks(SAMPLE_VALUE_DF, SAMPLE_BACKTEST)
+
+    assert result.error is None
+    assert [p.pick_id for p in result.picks] == [0, 2]  # 999 dropped, 0 and 2 kept in order
