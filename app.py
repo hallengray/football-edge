@@ -436,7 +436,19 @@ def render_fixtures_tab() -> None:
             )
             with st.spinner("Asking the AI to rank these picks…"):
                 result = explain_top_picks(value_df_reset, backtest)
-            _render_ai_picks(result, value_df_reset)
+            # Persist across reruns. Without this, clicking the inner "Log all
+            # N as paper trades" button reruns the script, st.button("Get AI
+            # picks") returns False on that rerun, this branch is skipped, the
+            # inner button never renders, and its click is dropped silently.
+            st.session_state["ai_result"] = result
+            st.session_state["ai_value_df"] = value_df_reset
+
+        # Render whatever's cached in session_state on every rerun, not just
+        # on the click frame.
+        cached_result = st.session_state.get("ai_result")
+        cached_df = st.session_state.get("ai_value_df")
+        if cached_result is not None and cached_df is not None:
+            _render_ai_picks(cached_result, cached_df)
 
         st.dataframe(
             value_df[display_cols],
