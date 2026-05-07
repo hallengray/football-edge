@@ -147,3 +147,15 @@ def test_prompt_includes_backtest_yields_and_value_bets(monkeypatch) -> None:
     # Pre-formatted numbers (no `%` or `+` in the data cells)
     assert "| 6.4 |" in user_message  # edge for row 0
     assert "| 9.0 |" in user_message  # edge for row 1
+
+
+def test_handles_429_rate_limit_gracefully(monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+
+    with requests_mock.Mocker() as m:
+        m.post(OPENROUTER_URL, status_code=429, text="Too Many Requests")
+        result = explain_top_picks(SAMPLE_VALUE_DF, SAMPLE_BACKTEST)
+
+    assert result.picks == []
+    assert result.error is not None
+    assert "OpenRouter returned 429" in result.error

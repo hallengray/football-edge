@@ -152,24 +152,44 @@ def explain_top_picks(
     model = os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL)
     user_prompt = _build_user_prompt(value_bets_df, backtest_summary)
 
-    response = requests.post(
-        OPENROUTER_URL,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": model,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": TEMPERATURE,
-        },
-        timeout=REQUEST_TIMEOUT,
-    )
+    try:
+        response = requests.post(
+            OPENROUTER_URL,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "response_format": {"type": "json_object"},
+                "temperature": TEMPERATURE,
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+    except requests.RequestException as e:
+        return ExplainerResult(
+            picks=[],
+            error=f"Couldn't reach OpenRouter: {e}. Try again in a minute.",
+        )
 
-    api_response = response.json()
-    picks = _parse_picks(api_response)
+    if response.status_code != 200:
+        snippet = response.text[:200]
+        return ExplainerResult(
+            picks=[],
+            error=f"OpenRouter returned {response.status_code}: {snippet}. Try again in a minute.",
+        )
+
+    try:
+        api_response = response.json()
+        picks = _parse_picks(api_response)
+    except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
+        return ExplainerResult(
+            picks=[],
+            error=f"AI returned unexpected response ({type(e).__name__}). Click again to retry.",
+        )
+
     return ExplainerResult(picks=picks, error=None)
