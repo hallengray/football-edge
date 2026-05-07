@@ -50,5 +50,8 @@ def explain_top_picks(
             error="Set OPENROUTER_API_KEY in .env to enable AI picks.",
         )
 
-    # Other paths to be implemented in subsequent tasks.
+    if value_bets_df.empty:
+        return ExplainerResult(picks=[], error=None)
+
+    # HTTP call + parsing to be implemented in subsequent tasks.
     return ExplainerResult(picks=[], error=None)

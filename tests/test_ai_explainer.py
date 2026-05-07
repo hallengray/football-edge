@@ -75,3 +75,15 @@ def test_returns_error_when_api_key_missing(monkeypatch) -> None:
     assert result.picks == []
     assert result.error is not None
     assert "OPENROUTER_API_KEY" in result.error
+
+
+def test_returns_no_error_when_value_bets_empty(monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    empty_df = pd.DataFrame(columns=SAMPLE_VALUE_DF.columns)
+
+    with requests_mock.Mocker() as m:
+        result = explain_top_picks(empty_df, SAMPLE_BACKTEST)
+        assert m.call_count == 0  # no HTTP call when df is empty
+
+    assert result.picks == []
+    assert result.error is None  # empty input is not an error
