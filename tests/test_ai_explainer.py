@@ -12,6 +12,7 @@ from src.ai_explainer import (
     Pick,
     compute_expected_yield,
     explain_top_picks,
+    explain_top_picks_in_market,
 )
 
 
@@ -243,3 +244,71 @@ def test_drops_picks_with_unknown_pick_id(monkeypatch) -> None:
 
     assert result.error is None
     assert [p.pick_id for p in result.picks] == [0, 2]  # 999 dropped, 0 and 2 kept in order
+
+
+def test_explain_top_picks_sets_value_df_on_success(monkeypatch) -> None:
+    """ExplainerResult.value_df must carry the df the picks reference, so renderers
+    can iloc[pick.pick_id] against it without the caller juggling separate dfs."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    inner_content = (
+        '{"picks": [{"pick_id": 0, "key_reason": "x", "risk": "y", "model_edge_pct": 6.4}]}'
+    )
+    api_response = {"choices": [{"message": {"role": "assistant", "content": inner_content}}]}
+
+    with requests_mock.Mocker() as m:
+        m.post(OPENROUTER_URL, json=api_response, status_code=200)
+        result = explain_top_picks(SAMPLE_VALUE_DF, SAMPLE_BACKTEST)
+
+    assert result.value_df is not None
+    # pick_id 0 must be a valid positional index into result.value_df
+    row = result.value_df.iloc[result.picks[0].pick_id]
+    assert "Match" in row.index  # the lookup yields a real row
+
+
+def test_explain_top_picks_in_market_filters_to_one_market(monkeypatch) -> None:
+    """When restricted to a single market key, only matching rows reach the AI."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    inner_content = '{"picks": []}'
+    api_response = {"choices": [{"message": {"role": "assistant", "content": inner_content}}]}
+
+    with requests_mock.Mocker() as m:
+        m.post(OPENROUTER_URL, json=api_response, status_code=200)
+        explain_top_picks_in_market(SAMPLE_VALUE_DF, SAMPLE_BACKTEST, market_key="draw", top_n=5)
+        request_body = m.last_request.json()
+
+    user_message = next(msg["content"] for msg in request_body["messages"] if msg["role"] == "user")
+    # Sample has one Draw row (Bayern). Liverpool (Home) and Lyon (Over 2.5) must be absent.
+    assert "Bayern Munich vs Borussia Dortmund" in user_message
+    assert "Liverpool vs Chelsea" not in user_message
+    assert "Lyon vs Paris Saint-Germain" not in user_message
+
+
+def test_explain_top_picks_in_market_respects_top_n(monkeypatch) -> None:
+    """top_n caps the rows sent to the AI even when more matching rows are available."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    # Build a df with 4 draw rows of varying edge.
+    df = pd.DataFrame(
+        {
+            "League": ["Bundesliga"] * 4,
+            "Match": [f"Team{i} vs Foe{i}" for i in range(4)],
+            "Bet": ["Draw"] * 4,
+            "Best odds": ["3.40"] * 4,
+            "_model_prob": [0.30, 0.31, 0.32, 0.33],
+            "_value_pct": [0.05, 0.07, 0.09, 0.11],
+        }
+    )
+    inner_content = '{"picks": []}'
+    api_response = {"choices": [{"message": {"role": "assistant", "content": inner_content}}]}
+
+    with requests_mock.Mocker() as m:
+        m.post(OPENROUTER_URL, json=api_response, status_code=200)
+        explain_top_picks_in_market(df, SAMPLE_BACKTEST, market_key="draw", top_n=2)
+        request_body = m.last_request.json()
+
+    user_message = next(msg["content"] for msg in request_body["messages"] if msg["role"] == "user")
+    # Top 2 by expected_yield (which is edge + bundesliga draw yield +7.20)
+    # = the two highest-edge draws: Team3 (0.11 edge) and Team2 (0.09 edge).
+    assert "Team3 vs Foe3" in user_message
+    assert "Team2 vs Foe2" in user_message
+    assert "Team0 vs Foe0" not in user_message
+    assert "Team1 vs Foe1" not in user_message

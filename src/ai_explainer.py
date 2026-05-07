@@ -135,11 +135,18 @@ class ExplainerResult:
     - "config": OPENROUTER_API_KEY missing -> Streamlit st.info
     - "transport": network failure or non-200 status -> st.error
     - "parse": valid HTTP response but unexpected body shape -> st.warning
+
+    value_df, when set, is the (capped, sorted, reset-indexed) DataFrame that
+    the picks reference. Each pick.pick_id is a positional index into this df.
+    Carrying the df with the result makes multi-result rendering (e.g. one
+    section for top draws + another for top mixed) work without the caller
+    juggling separate dfs per section.
     """
 
     picks: list[Pick] = field(default_factory=list)
     error: str | None = None
     error_kind: ErrorKind | None = None
+    value_df: pd.DataFrame | None = None
 
 
 def _format_backtest(backtest: dict) -> str:
@@ -339,4 +346,27 @@ def explain_top_picks(
             error_kind="parse",
         )
 
-    return ExplainerResult(picks=picks, error=None)
+    return ExplainerResult(picks=picks, error=None, value_df=value_bets_df)
+
+
+def explain_top_picks_in_market(
+    value_bets_df: pd.DataFrame,
+    backtest_summary: dict,
+    market_key: str,
+    top_n: int = 5,
+) -> ExplainerResult:
+    """Rank and explain the top N value bets restricted to one market.
+
+    market_key must be one of the keys in MARKET_KEY_BY_OUTCOME's values:
+    "home_win", "draw", "away_win", "over_2.5", "under_2.5".
+
+    Pre-filters value_bets_df to rows whose Bet maps to the requested market,
+    sorts by expected_yield_pct desc, takes top_n, then delegates to
+    explain_top_picks. The returned ExplainerResult.value_df is the filtered
+    df, so renderers can iloc[pick.pick_id] against it directly.
+    """
+    df = compute_expected_yield(value_bets_df, backtest_summary)
+    df = df[df["Bet"].apply(lambda b: _bet_to_market_key(b) == market_key)]
+    df = df.sort_values("_expected_yield_pct", ascending=False).head(top_n)
+    df = df.reset_index(drop=True)
+    return explain_top_picks(df, backtest_summary)

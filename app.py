@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -30,6 +31,7 @@ from src.ai_explainer import (
     Pick,
     compute_expected_yield,
     explain_top_picks,
+    explain_top_picks_in_market,
 )
 
 logger = logging.getLogger(__name__)
@@ -277,15 +279,88 @@ def _build_rows(
 PAPER_TRADE_STAKE = 10.0
 
 
-def _log_picks_as_paper_trades(
-    picks_with_rank: list[tuple[int, Pick]],
-    value_df_reset: pd.DataFrame,
-) -> int:
-    """Write each AI pick to Supabase as a paper-trade entry. Returns count logged."""
+def _render_pick_card(rank: int, pick: Pick, row: pd.Series) -> None:
+    """Render one pick as a collapsible card. The row is the value-bets row the pick references."""
+    title = (
+        f"#{rank}  {row['Bet']} — {row['Match']} @ {row['Best odds']}  "
+        f"(Edge: {pick.model_edge_pct:+.1f}%)"
+    )
+    with st.expander(title, expanded=True):
+        st.markdown(f"**Why:** {pick.key_reason}")
+        st.markdown(f"**Risk:** {pick.risk}")
+
+
+def _render_section_error(result: ExplainerResult) -> None:
+    """Dispatch one section's error to the right Streamlit visual."""
+    if result.error_kind == "config":
+        st.info(result.error)
+    elif result.error_kind == "transport":
+        st.error(result.error)
+    else:
+        st.warning(result.error)
+
+
+def _render_pick_section(
+    title: str,
+    result: ExplainerResult,
+    group_by_league: bool = False,
+) -> None:
+    """Render one section: heading + (cards | error). Silent skip if no picks and no error."""
+    if result.error:
+        st.markdown(f"### {title}")
+        _render_section_error(result)
+        return
+    if not result.picks or result.value_df is None:
+        return
+
+    st.markdown(f"### {title}")
+    df = result.value_df
+    if group_by_league:
+        # Preserve overall rank within the section, but cluster by league.
+        league_to_picks: dict[str, list[tuple[int, Pick]]] = {}
+        for rank, pick in enumerate(result.picks, start=1):
+            league = df.iloc[pick.pick_id]["League"]
+            league_to_picks.setdefault(league, []).append((rank, pick))
+        for league, picks_in_league in league_to_picks.items():
+            st.markdown(f"#### {league}")
+            for rank, pick in picks_in_league:
+                _render_pick_card(rank, pick, df.iloc[pick.pick_id])
+    else:
+        for rank, pick in enumerate(result.picks, start=1):
+            _render_pick_card(rank, pick, df.iloc[pick.pick_id])
+
+
+def _collect_distinct_rows(
+    results: list[ExplainerResult],
+    section_labels: list[str],
+) -> list[tuple[str, int, Pick, pd.Series]]:
+    """Flatten picks across results, deduping by (fixture_id, market, outcome).
+
+    Returns a list of (section_label, rank, pick, row) tuples in the order
+    encountered. The first time a (fixture, market, outcome) is seen wins;
+    later duplicates are skipped so the same bet isn't logged twice when it
+    appears in both Top Draws AND Top Mixed.
+    """
+    seen: set[tuple] = set()
+    out: list[tuple[str, int, Pick, pd.Series]] = []
+    for result, label in zip(results, section_labels, strict=True):
+        if result is None or not result.picks or result.value_df is None:
+            continue
+        for rank, pick in enumerate(result.picks, start=1):
+            row = result.value_df.iloc[pick.pick_id]
+            key = (row["fixture_id"], row["market"], row["outcome"])
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append((label, rank, pick, row))
+    return out
+
+
+def _log_pick_rows(items: list[tuple[str, int, Pick, pd.Series]]) -> int:
+    """Write distinct picks to Supabase as paper trades. Returns count logged."""
     client = get_client()
     count = 0
-    for rank, pick in picks_with_rank:
-        row = value_df_reset.iloc[pick.pick_id]
+    for section_label, rank, _pick, row in items:
         kickoff_iso = row["kickoff"]
         kickoff_dt = (
             datetime.fromisoformat(kickoff_iso.replace("Z", "+00:00"))
@@ -312,25 +387,22 @@ def _log_picks_as_paper_trades(
             client,
             prediction_id=prediction["id"],
             stake_amount=PAPER_TRADE_STAKE,
-            notes=f"AI paper trade #{rank}",
+            notes=f"AI paper trade — {section_label} #{rank}",
         )
         count += 1
     return count
 
 
-def _render_ai_picks(result: ExplainerResult, value_df_reset: pd.DataFrame) -> None:
-    """Render the AI explainer's output as banner + collapsible cards."""
-    if result.error:
-        # Dispatch on the explainer's typed error_kind, not by sniffing substrings.
-        if result.error_kind == "config":
-            st.info(result.error)
-        elif result.error_kind == "transport":
-            st.error(result.error)
-        else:
-            st.warning(result.error)
-        return
-
-    if not result.picks:
+def _render_ai_panel(
+    result_draws: ExplainerResult | None,
+    result_mixed: ExplainerResult | None,
+) -> None:
+    """Render the full AI panel: banner + sections + dedup'd bulk-log button."""
+    has_anything = bool(
+        (result_draws and (result_draws.picks or result_draws.error))
+        or (result_mixed and (result_mixed.picks or result_mixed.error))
+    )
+    if not has_anything:
         return
 
     st.warning(
@@ -339,32 +411,44 @@ def _render_ai_picks(result: ExplainerResult, value_df_reset: pd.DataFrame) -> N
         "[BeGambleAware](https://www.begambleaware.org)"
     )
 
-    picks_with_rank = list(enumerate(result.picks, start=1))
-    for rank, pick in picks_with_rank:
-        row = value_df_reset.iloc[pick.pick_id]
-        title = (
-            f"#{rank}  {row['Bet']} — {row['Match']} @ {row['Best odds']}  "
-            f"(Edge: {pick.model_edge_pct:+.1f}%)"
+    if result_draws is not None:
+        _render_pick_section(
+            "🎯 Top 5 Draws (the model's strongest backtest signal)",
+            result_draws,
+            group_by_league=False,
         )
-        with st.expander(title, expanded=True):
-            st.markdown(f"**Why:** {pick.key_reason}")
-            st.markdown(f"**Risk:** {pick.risk}")
+    if result_mixed is not None:
+        _render_pick_section(
+            "📊 Top 10 Across All Markets",
+            result_mixed,
+            group_by_league=True,
+        )
 
-    # Bulk-log button. Idempotent within a session: each unique batch of pick_ids
-    # can only be logged once -- a re-click on the same picks does nothing. A
-    # fresh "Get AI picks" returns a different batch and unlocks the button again.
-    batch_key = f"ai_paper_logged::{tuple(p.pick_id for p in result.picks)}"
+    # Single bulk-log button across both sections. Dedupes by (fixture, market,
+    # outcome) so a Bayern draw appearing in both sections only logs once.
+    distinct = _collect_distinct_rows(
+        [result_draws, result_mixed],
+        ["Top Draws", "Top Mixed"],
+    )
+    if not distinct:
+        return
+
+    # Idempotent across reruns: keys on the set of (fixture, market, outcome) tuples.
+    batch_key = "ai_paper_logged::" + str(
+        tuple(
+            sorted((row["fixture_id"], row["market"], row["outcome"]) for _, _, _, row in distinct)
+        )
+    )
     already_logged = st.session_state.get(batch_key, False)
-
     button_label = (
         "✅ Logged this batch as paper trades"
         if already_logged
-        else f"📝 Log all {len(result.picks)} as paper trades (£{PAPER_TRADE_STAKE:.0f} each)"
+        else f"📝 Log all {len(distinct)} unique picks as paper trades (£{PAPER_TRADE_STAKE:.0f} each)"
     )
     if st.button(button_label, type="secondary", disabled=already_logged):
         try:
             with st.spinner("Logging…"):
-                count = _log_picks_as_paper_trades(picks_with_rank, value_df_reset)
+                count = _log_pick_rows(distinct)
             st.session_state[batch_key] = True
             st.success(f"Logged {count} paper trades. See the Tracking tab to settle them later.")
         except Exception as e:
@@ -425,30 +509,34 @@ def render_fixtures_tab() -> None:
 
         if st.button("🤖 Get AI picks", type="primary"):
             backtest = _models.backtest or {}
-            # Pre-rank by expected_yield_pct (edge + historical market yield) so
-            # the AI sees rows in the order it should pick from, AND so the
-            # renderer's iloc lookup against value_df_reset matches the AI's
-            # pick_id space exactly.
             value_df_reset = (
                 compute_expected_yield(value_df.reset_index(drop=True), backtest)
                 .sort_values("_expected_yield_pct", ascending=False)
                 .reset_index(drop=True)
             )
+            # Two AI calls in parallel: the dedicated Top 5 Draws section
+            # (paper-trade vehicle for the Bundesliga-draw signal) and the
+            # general Top 10 Mixed section. Parallel execution roughly halves
+            # the wall-clock wait vs sequential calls.
             with st.spinner("Asking the AI to rank these picks…"):
-                result = explain_top_picks(value_df_reset, backtest)
-            # Persist across reruns. Without this, clicking the inner "Log all
-            # N as paper trades" button reruns the script, st.button("Get AI
-            # picks") returns False on that rerun, this branch is skipped, the
-            # inner button never renders, and its click is dropped silently.
-            st.session_state["ai_result"] = result
-            st.session_state["ai_value_df"] = value_df_reset
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    future_draws = executor.submit(
+                        explain_top_picks_in_market, value_df_reset, backtest, "draw", 5
+                    )
+                    future_mixed = executor.submit(explain_top_picks, value_df_reset, backtest)
+                    result_draws = future_draws.result()
+                    result_mixed = future_mixed.result()
+            # Persist across reruns so the bulk-log button (which lives inside
+            # the rendered cards) actually fires when clicked. Without this,
+            # the click triggers a rerun, this if-branch is False, the cards
+            # don't render, and the click is silently dropped.
+            st.session_state["ai_result_draws"] = result_draws
+            st.session_state["ai_result_mixed"] = result_mixed
 
-        # Render whatever's cached in session_state on every rerun, not just
-        # on the click frame.
-        cached_result = st.session_state.get("ai_result")
-        cached_df = st.session_state.get("ai_value_df")
-        if cached_result is not None and cached_df is not None:
-            _render_ai_picks(cached_result, cached_df)
+        cached_draws = st.session_state.get("ai_result_draws")
+        cached_mixed = st.session_state.get("ai_result_mixed")
+        if cached_draws is not None or cached_mixed is not None:
+            _render_ai_panel(cached_draws, cached_mixed)
 
         st.dataframe(
             value_df[display_cols],
