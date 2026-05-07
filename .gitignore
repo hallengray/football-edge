@@ -3,9 +3,10 @@
 __pycache__/
 *.pyc
 *.pkl
+!models/*.pkl
 .streamlit/secrets.toml
-models/
 data/
+models.v0_backup/
 .DS_Store
 *.egg-info/
 .ruff_cache/

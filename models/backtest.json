@@ -1,0 +1,142 @@
+{
+  "trained_at": "2026-05-07T10:02:56.001769Z",
+  "training_seasons": [
+    2018,
+    2019,
+    2020,
+    2021,
+    2022,
+    2023,
+    2024,
+    2025
+  ],
+  "sklearn_version": "1.8.0",
+  "n_training_matches": 14359,
+  "leagues": {
+    "epl": {
+      "n_matches": 3059,
+      "markets": {
+        "home_win": {
+          "n_bets": 842,
+          "yield_pct": -10.96
+        },
+        "draw": {
+          "n_bets": 507,
+          "yield_pct": -12.79
+        },
+        "away_win": {
+          "n_bets": 1289,
+          "yield_pct": -5.08
+        },
+        "over_2.5": {
+          "n_bets": 430,
+          "yield_pct": -11.92
+        },
+        "under_2.5": {
+          "n_bets": 820,
+          "yield_pct": -2.9
+        }
+      }
+    },
+    "laliga": {
+      "n_matches": 2982,
+      "markets": {
+        "home_win": {
+          "n_bets": 860,
+          "yield_pct": -9.17
+        },
+        "draw": {
+          "n_bets": 895,
+          "yield_pct": -6.11
+        },
+        "away_win": {
+          "n_bets": 733,
+          "yield_pct": -26.19
+        },
+        "over_2.5": {
+          "n_bets": 638,
+          "yield_pct": -8.64
+        },
+        "under_2.5": {
+          "n_bets": 628,
+          "yield_pct": -5.37
+        }
+      }
+    },
+    "seriea": {
+      "n_matches": 3060,
+      "markets": {
+        "home_win": {
+          "n_bets": 521,
+          "yield_pct": -26.06
+        },
+        "draw": {
+          "n_bets": 927,
+          "yield_pct": -3.58
+        },
+        "away_win": {
+          "n_bets": 889,
+          "yield_pct": -11.4
+        },
+        "over_2.5": {
+          "n_bets": 882,
+          "yield_pct": -7.9
+        },
+        "under_2.5": {
+          "n_bets": 360,
+          "yield_pct": -3.77
+        }
+      }
+    },
+    "bundesliga": {
+      "n_matches": 2457,
+      "markets": {
+        "home_win": {
+          "n_bets": 615,
+          "yield_pct": -1.18
+        },
+        "draw": {
+          "n_bets": 679,
+          "yield_pct": 7.2
+        },
+        "away_win": {
+          "n_bets": 869,
+          "yield_pct": -12.92
+        },
+        "over_2.5": {
+          "n_bets": 725,
+          "yield_pct": -3.74
+        },
+        "under_2.5": {
+          "n_bets": 316,
+          "yield_pct": -22.73
+        }
+      }
+    },
+    "ligue1": {
+      "n_matches": 2801,
+      "markets": {
+        "home_win": {
+          "n_bets": 590,
+          "yield_pct": -10.78
+        },
+        "draw": {
+          "n_bets": 491,
+          "yield_pct": -9.56
+        },
+        "away_win": {
+          "n_bets": 740,
+          "yield_pct": 1.62
+        },
+        "over_2.5": {
+          "n_bets": 376,
+          "yield_pct": 0.27
+        },
+        "under_2.5": {
+          "n_bets": 598,
+          "yield_pct": -11.72
+        }
+      }
+    }
+  }
+}
