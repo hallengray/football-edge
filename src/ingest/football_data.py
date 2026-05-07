@@ -47,6 +47,8 @@ RETRY_SLEEP = 5
 MIRROR_TO_LEGACY_COLUMNS: dict[str, str] = {
     "target__home_team__full_time_goals": "FTHG",
     "target__away_team__full_time_goals": "FTAG",
+    "target__home_team__shots_on_target": "HST",
+    "target__away_team__shots_on_target": "AST",
     "odds__market_average__home_win__full_time_goals": "AvgH",
     "odds__market_average__draw__full_time_goals": "AvgD",
     "odds__market_average__away_win__full_time_goals": "AvgA",

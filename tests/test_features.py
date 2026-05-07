@@ -9,6 +9,7 @@ from src.features import (
     _add_form_features,
     _add_rest_features,
     _add_rolling_goals,
+    _add_shooting_features,
     _add_strength_of_schedule,
     _add_xg_features,
     _merge_xg,
@@ -173,6 +174,40 @@ def test_merge_xg_no_match_yields_nan() -> None:
     assert pd.isna(out.loc[0, "away_xg"])
 
 
+def test_add_shooting_features_uses_only_prior_matches() -> None:
+    """Index 2's home_sot_last_5 must average matches 0 and 1 only -- a leakage bug
+    that pulled in match 2's own SoT would balloon the average past the 5.5 baseline.
+    """
+    df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2024-08-01", "2024-08-08", "2024-08-15"]),
+            "home_team": ["Arsenal", "Arsenal", "Arsenal"],
+            "away_team": ["A", "B", "C"],
+            "HST": [4, 7, 99],  # huge match-2 value would surface a leak
+            "AST": [3, 2, 1],
+        }
+    )
+    out = _add_shooting_features(df, window=5)
+    # Index 2's home_sot_last_5 should average matches 0 and 1: (4+7)/2 = 5.5
+    assert out.loc[2, "home_sot_last_5"] == pytest.approx(5.5)
+
+
+def test_add_shooting_features_distinguishes_for_and_against() -> None:
+    """home_sota = SoT _against_ the home team in prior matches (i.e. opponents' SoT)."""
+    df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2024-08-01", "2024-08-08"]),
+            "home_team": ["Arsenal", "Arsenal"],
+            "away_team": ["A", "B"],
+            "HST": [4, 0],  # Arsenal's SoT match 0 = 4
+            "AST": [9, 0],  # opponents' SoT match 0 = 9
+        }
+    )
+    out = _add_shooting_features(df, window=5)
+    assert out.loc[1, "home_sot_last_5"] == pytest.approx(4.0)
+    assert out.loc[1, "home_sota_last_5"] == pytest.approx(9.0)
+
+
 def test_xg_minus_actual_overperformance_signal() -> None:
     """Team scored 3 actual goals against 1.5 xG → +1.5 overperformance (lucky)."""
     df = pd.DataFrame(
@@ -222,6 +257,8 @@ def test_compute_features_end_to_end_runs_without_error() -> None:
             "away_team": ["Liverpool", "Arsenal", "Liverpool", "Arsenal"],
             "FTHG": [2, 1, 0, 3],
             "FTAG": [1, 1, 2, 0],
+            "HST": [5, 4, 3, 7],
+            "AST": [4, 3, 6, 2],
             "league": ["England"] * 4,
             "year": [2024] * 4,
         }
@@ -252,6 +289,10 @@ def test_compute_features_end_to_end_runs_without_error() -> None:
         "home_goals_conceded_last_5",
         "away_goals_scored_last_5",
         "away_goals_conceded_last_5",
+        "home_sot_last_5",
+        "home_sota_last_5",
+        "away_sot_last_5",
+        "away_sota_last_5",
         "home_xg_last_5",
         "home_xga_last_5",
         "home_xg_minus_actual_last_5",

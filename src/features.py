@@ -219,6 +219,70 @@ def _add_rolling_goals(df: pd.DataFrame, window: int = WINDOW_DEFAULT) -> pd.Dat
     return df
 
 
+def _add_shooting_features(df: pd.DataFrame, window: int = WINDOW_DEFAULT) -> pd.DataFrame:
+    """Add `home_sot_last_5`, `home_sota_last_5`, and away counterparts.
+
+    Rolling shots-on-target for the team and against the team over the last
+    `window` matches. Always-on baseline for shot-quality signal -- relies only
+    on football-data's HST/AST, not on Understat. When xG data is also present,
+    `_add_xg_features` runs in parallel and adds richer features.
+
+    Uses only matches BEFORE the current row's date (per the leakage guard).
+    """
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date").reset_index(drop=True)
+
+    long_home = df[["date", "home_team", "HST", "AST"]].copy()
+    long_home["team"] = long_home["home_team"]
+    long_home["match_id"] = long_home.index
+    long_home["side"] = "home"
+    long_home["sot"] = long_home["HST"]
+    long_home["sota"] = long_home["AST"]
+
+    long_away = df[["date", "away_team", "HST", "AST"]].copy()
+    long_away["team"] = long_away["away_team"]
+    long_away["match_id"] = long_away.index
+    long_away["side"] = "away"
+    long_away["sot"] = long_away["AST"]
+    long_away["sota"] = long_away["HST"]
+
+    long = pd.concat([long_home, long_away], ignore_index=True)
+    long = long.sort_values(["team", "date"]).reset_index(drop=True)
+
+    grouped = long.groupby("team", group_keys=False)
+    long["sot_last_5"] = grouped["sot"].apply(
+        lambda s: s.shift(1).rolling(window, min_periods=1).mean()
+    )
+    long["sota_last_5"] = grouped["sota"].apply(
+        lambda s: s.shift(1).rolling(window, min_periods=1).mean()
+    )
+
+    home = (
+        long[long["side"] == "home"]
+        .set_index("match_id")[["sot_last_5", "sota_last_5"]]
+        .rename(
+            columns={
+                "sot_last_5": "home_sot_last_5",
+                "sota_last_5": "home_sota_last_5",
+            }
+        )
+    )
+    away = (
+        long[long["side"] == "away"]
+        .set_index("match_id")[["sot_last_5", "sota_last_5"]]
+        .rename(
+            columns={
+                "sot_last_5": "away_sot_last_5",
+                "sota_last_5": "away_sota_last_5",
+            }
+        )
+    )
+
+    df = df.join(home).join(away)
+    return df
+
+
 def _add_xg_features(df: pd.DataFrame, window: int = WINDOW_DEFAULT) -> pd.DataFrame:
     """Add rolling xG/xGA averages plus xG-vs-actual delta (overperformance signal).
 
@@ -432,14 +496,16 @@ def compute_features(matches_df: pd.DataFrame, xg_df: pd.DataFrame) -> pd.DataFr
         3. Rest features
         4. Form features (last 5 W/D/L)
         5. Rolling goals (last 5 scored/conceded)
-        6. xG features (last 5 xG/xGA + over/underperformance)
-        7. Strength of schedule (last 5 opponents' prior-season position)
+        6. Rolling shots-on-target (always-on baseline; uses football-data HST/AST)
+        7. xG features (last 5 xG/xGA + over/underperformance; needs Understat)
+        8. Strength of schedule (last 5 opponents' prior-season position)
     """
     df = _normalise_team_names(matches_df)
     df = _merge_xg(df, xg_df)
     df = _add_rest_features(df)
     df = _add_form_features(df, window=WINDOW_DEFAULT)
     df = _add_rolling_goals(df, window=WINDOW_DEFAULT)
+    df = _add_shooting_features(df, window=WINDOW_DEFAULT)
     df = _add_xg_features(df, window=WINDOW_DEFAULT)
     df = _add_strength_of_schedule(df, window=WINDOW_DEFAULT)
     return df

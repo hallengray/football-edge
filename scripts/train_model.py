@@ -273,12 +273,18 @@ def _split_by_league(features_df: pd.DataFrame, league: str):
         }
     )
 
-    # X = features only -- drop the outcome columns and odds columns
-    drop_cols = ["FTHG", "FTAG", "FTR", "HTHG", "HTAG", "HTR"]
+    # X = features only -- drop the outcome columns, odds columns, and any raw
+    # post-match observable still in the frame. The mirror's `target__*` columns
+    # (full-time goals, shots, SoT, corners, cards) are populated for training rows
+    # but absent for upcoming-fixture rows; including them in X causes target
+    # leakage at training that vanishes at predict time. HST/AST are renamed
+    # post-match observables fed only into the rolling shooting features.
+    drop_cols = ["FTHG", "FTAG", "FTR", "HTHG", "HTAG", "HTR", "HST", "AST"]
     feature_cols = [
         c
         for c in df.columns
         if c not in drop_cols
+        and not c.startswith("target__")
         and not (h2h_cols and c in h2h_cols)
         and not (over_under_cols and c in over_under_cols)
     ]
@@ -322,6 +328,8 @@ def _build_upcoming_fixtures_for_features(matches_raw: pd.DataFrame) -> pd.DataF
                 "AwayTeam": away_fd,
                 "FTHG": 0,
                 "FTAG": 0,
+                "HST": 0,
+                "AST": 0,
                 "league": league_fd,
                 "year": pd.to_datetime(fixture["commence_time"]).year,
             }
