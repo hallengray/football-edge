@@ -25,7 +25,12 @@ from src.database import (
 from src.odds import best_odds_for_outcome, get_big5_odds
 from src.predictions import Models, load_models, predict_fixture
 from src.value import assess_value, remove_bookmaker_margin
-from src.ai_explainer import ExplainerResult, compute_expected_yield, explain_top_picks
+from src.ai_explainer import (
+    ExplainerResult,
+    Pick,
+    compute_expected_yield,
+    explain_top_picks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +274,50 @@ def _build_rows(
     return rows
 
 
+PAPER_TRADE_STAKE = 10.0
+
+
+def _log_picks_as_paper_trades(
+    picks_with_rank: list[tuple[int, Pick]],
+    value_df_reset: pd.DataFrame,
+) -> int:
+    """Write each AI pick to Supabase as a paper-trade entry. Returns count logged."""
+    client = get_client()
+    count = 0
+    for rank, pick in picks_with_rank:
+        row = value_df_reset.iloc[pick.pick_id]
+        kickoff_iso = row["kickoff"]
+        kickoff_dt = (
+            datetime.fromisoformat(kickoff_iso.replace("Z", "+00:00"))
+            if kickoff_iso
+            else datetime.now(timezone.utc)
+        )
+        prediction = log_prediction(
+            client,
+            fixture_id=row["fixture_id"],
+            home_team=row["home_team"],
+            away_team=row["away_team"],
+            kickoff=kickoff_dt,
+            market=row["market"],
+            outcome=row["outcome"],
+            model_probability=float(row["_model_prob"]),
+            bookmaker=row["_bookmaker"],
+            decimal_odds=float(row["_decimal_odds"]),
+            value_pct=float(row["_value_pct"]),
+            kelly_stake_fraction=float(row["_kelly_fraction"]),
+        )
+        if not prediction.get("id"):
+            continue
+        record_bet(
+            client,
+            prediction_id=prediction["id"],
+            stake_amount=PAPER_TRADE_STAKE,
+            notes=f"AI paper trade #{rank}",
+        )
+        count += 1
+    return count
+
+
 def _render_ai_picks(result: ExplainerResult, value_df_reset: pd.DataFrame) -> None:
     """Render the AI explainer's output as banner + collapsible cards."""
     if result.error:
@@ -290,7 +339,8 @@ def _render_ai_picks(result: ExplainerResult, value_df_reset: pd.DataFrame) -> N
         "[BeGambleAware](https://www.begambleaware.org)"
     )
 
-    for rank, pick in enumerate(result.picks, start=1):
+    picks_with_rank = list(enumerate(result.picks, start=1))
+    for rank, pick in picks_with_rank:
         row = value_df_reset.iloc[pick.pick_id]
         title = (
             f"#{rank}  {row['Bet']} — {row['Match']} @ {row['Best odds']}  "
@@ -299,6 +349,26 @@ def _render_ai_picks(result: ExplainerResult, value_df_reset: pd.DataFrame) -> N
         with st.expander(title, expanded=True):
             st.markdown(f"**Why:** {pick.key_reason}")
             st.markdown(f"**Risk:** {pick.risk}")
+
+    # Bulk-log button. Idempotent within a session: each unique batch of pick_ids
+    # can only be logged once -- a re-click on the same picks does nothing. A
+    # fresh "Get AI picks" returns a different batch and unlocks the button again.
+    batch_key = f"ai_paper_logged::{tuple(p.pick_id for p in result.picks)}"
+    already_logged = st.session_state.get(batch_key, False)
+
+    button_label = (
+        "✅ Logged this batch as paper trades"
+        if already_logged
+        else f"📝 Log all {len(result.picks)} as paper trades (£{PAPER_TRADE_STAKE:.0f} each)"
+    )
+    if st.button(button_label, type="secondary", disabled=already_logged):
+        try:
+            with st.spinner("Logging…"):
+                count = _log_picks_as_paper_trades(picks_with_rank, value_df_reset)
+            st.session_state[batch_key] = True
+            st.success(f"Logged {count} paper trades. See the Tracking tab to settle them later.")
+        except Exception as e:
+            st.error(f"Couldn't log: {e}")
 
 
 def render_fixtures_tab() -> None:
