@@ -28,7 +28,10 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from dotenv import load_dotenv
 from sklearn.model_selection import TimeSeriesSplit
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
