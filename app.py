@@ -25,6 +25,7 @@ from src.database import (
 from src.odds import best_odds_for_outcome, get_big5_odds
 from src.predictions import Models, load_models, predict_fixture
 from src.value import assess_value, remove_bookmaker_margin
+from src.ai_explainer import ExplainerResult, explain_top_picks
 
 logger = logging.getLogger(__name__)
 
@@ -268,6 +269,37 @@ def _build_rows(
     return rows
 
 
+def _render_ai_picks(result: ExplainerResult, value_df_reset: pd.DataFrame) -> None:
+    """Render the AI explainer's output as banner + collapsible cards."""
+    if result.error:
+        if "OPENROUTER_API_KEY" in result.error:
+            st.info(result.error)
+        elif "OpenRouter returned" in result.error or "Couldn't reach" in result.error:
+            st.error(result.error)
+        else:
+            st.warning(result.error)
+        return
+
+    if not result.picks:
+        return
+
+    st.warning(
+        "⚠️ **Paper trade only.** These picks are the model's edge calls explained by an "
+        "LLM, not investment advice. Backtests beat the future ~30% of the time. "
+        "[BeGambleAware](https://www.begambleaware.org)"
+    )
+
+    for rank, pick in enumerate(result.picks, start=1):
+        row = value_df_reset.iloc[pick.pick_id]
+        title = (
+            f"#{rank}  {row['Bet']} — {row['Match']} @ {row['Best odds']}  "
+            f"(Edge: {pick.model_edge_pct:+.1f}%)"
+        )
+        with st.expander(title, expanded=True):
+            st.markdown(f"**Why:** {pick.key_reason}")
+            st.markdown(f"**Risk:** {pick.risk}")
+
+
 def render_fixtures_tab() -> None:
     st.markdown("## Upcoming Premier League fixtures")
 
@@ -319,6 +351,13 @@ def render_fixtures_tab() -> None:
 
     if not value_df.empty:
         st.markdown(f"### 🎯 Value bets ({len(value_df)})")
+
+        if st.button("🤖 Get AI picks", type="primary"):
+            value_df_reset = value_df.reset_index(drop=True)
+            with st.spinner("Asking the AI to rank these picks…"):
+                result = explain_top_picks(value_df_reset, _models.backtest or {})
+            _render_ai_picks(result, value_df_reset)
+
         st.dataframe(
             value_df[display_cols],
             use_container_width=True,
