@@ -11,7 +11,7 @@ from src.ingest.football_data import (
     download_training_data,
 )
 from src.ingest.understat import (
-    LEAGUE_PAGE_URL_TEMPLATE,
+    LEAGUE_DATA_URL_TEMPLATE,
     fetch_league_xg,
     fetch_xg_data,
 )
@@ -134,28 +134,41 @@ def test_download_fixtures_data_always_refetches(tmp_path, monkeypatch) -> None:
 # ─── Understat ingest tests ──────────────────────────────────────────
 
 
-SAMPLE_UNDERSTAT_HTML = """
-<html><body>
-<script>
-var datesData = JSON.parse('\\u005B\\u007B\\u0022id\\u0022:\\u00221\\u0022,\\u0022isResult\\u0022:true,\\u0022h\\u0022:\\u007B\\u0022id\\u0022:\\u00229\\u0022,\\u0022title\\u0022:\\u0022Arsenal\\u0022,\\u0022short_title\\u0022:\\u0022ARS\\u0022\\u007D,\\u0022a\\u0022:\\u007B\\u0022id\\u0022:\\u002210\\u0022,\\u0022title\\u0022:\\u0022Chelsea\\u0022,\\u0022short_title\\u0022:\\u0022CHE\\u0022\\u007D,\\u0022goals\\u0022:\\u007B\\u0022h\\u0022:\\u00222\\u0022,\\u0022a\\u0022:\\u00221\\u0022\\u007D,\\u0022xG\\u0022:\\u007B\\u0022h\\u0022:\\u00221.85\\u0022,\\u0022a\\u0022:\\u00221.20\\u0022\\u007D,\\u0022datetime\\u0022:\\u00222024-08-15 16:30:00\\u0022\\u007D\\u005D');
-</script>
-</body></html>
-"""
+# The Understat XHR endpoint returns a JSON object whose `dates` array has one
+# entry per match with the same shape used elsewhere in the pipeline.
+SAMPLE_UNDERSTAT_JSON: dict = {
+    "teams": {},
+    "players": [],
+    "dates": [
+        {
+            "id": "1",
+            "isResult": True,
+            "h": {"id": "9", "title": "Arsenal", "short_title": "ARS"},
+            "a": {"id": "10", "title": "Chelsea", "short_title": "CHE"},
+            "goals": {"h": "2", "a": "1"},
+            "xG": {"h": "1.85", "a": "1.20"},
+            "datetime": "2024-08-15 16:30:00",
+        }
+    ],
+}
 
 
 def test_understat_url_template() -> None:
     assert (
-        LEAGUE_PAGE_URL_TEMPLATE.format(league="EPL", year=2024)
-        == "https://understat.com/league/EPL/2024"
+        LEAGUE_DATA_URL_TEMPLATE.format(league="EPL", year=2024)
+        == "https://understat.com/getLeagueData/EPL/2024"
     )
 
 
-def test_fetch_league_xg_parses_embedded_json(tmp_path, monkeypatch) -> None:
+def test_fetch_league_xg_parses_endpoint_json(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("src.ingest.understat.CACHE_DIR", tmp_path)
     monkeypatch.setattr("src.ingest.understat.SCRAPE_SLEEP", 0)  # speed up tests
 
     with requests_mock.Mocker() as m:
-        m.get("https://understat.com/league/EPL/2024", text=SAMPLE_UNDERSTAT_HTML)
+        m.get(
+            LEAGUE_DATA_URL_TEMPLATE.format(league="EPL", year=2024),
+            json=SAMPLE_UNDERSTAT_JSON,
+        )
         df = fetch_league_xg("EPL", 2024)
 
     assert len(df) == 1
@@ -171,8 +184,19 @@ def test_fetch_league_xg_handles_404_gracefully(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("src.ingest.understat.SCRAPE_SLEEP", 0)
 
     with requests_mock.Mocker() as m:
-        m.get("https://understat.com/league/EPL/1999", status_code=404)
+        m.get(LEAGUE_DATA_URL_TEMPLATE.format(league="EPL", year=1999), status_code=404)
         df = fetch_league_xg("EPL", 1999)
+
+    assert df.empty
+
+
+def test_fetch_league_xg_handles_malformed_json_gracefully(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("src.ingest.understat.CACHE_DIR", tmp_path)
+    monkeypatch.setattr("src.ingest.understat.SCRAPE_SLEEP", 0)
+
+    with requests_mock.Mocker() as m:
+        m.get(LEAGUE_DATA_URL_TEMPLATE.format(league="EPL", year=2024), text="not json at all")
+        df = fetch_league_xg("EPL", 2024)
 
     assert df.empty
 
@@ -182,7 +206,10 @@ def test_fetch_league_xg_uses_cache(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("src.ingest.understat.SCRAPE_SLEEP", 0)
 
     with requests_mock.Mocker() as m:
-        m.get("https://understat.com/league/EPL/2024", text=SAMPLE_UNDERSTAT_HTML)
+        m.get(
+            LEAGUE_DATA_URL_TEMPLATE.format(league="EPL", year=2024),
+            json=SAMPLE_UNDERSTAT_JSON,
+        )
         fetch_league_xg("EPL", 2024)
         assert m.call_count == 1
         # Second call should read from cache parquet, not network
@@ -195,8 +222,14 @@ def test_fetch_xg_data_concatenates_leagues(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("src.ingest.understat.SCRAPE_SLEEP", 0)
 
     with requests_mock.Mocker() as m:
-        m.get("https://understat.com/league/EPL/2024", text=SAMPLE_UNDERSTAT_HTML)
-        m.get("https://understat.com/league/La_liga/2024", text=SAMPLE_UNDERSTAT_HTML)
+        m.get(
+            LEAGUE_DATA_URL_TEMPLATE.format(league="EPL", year=2024),
+            json=SAMPLE_UNDERSTAT_JSON,
+        )
+        m.get(
+            LEAGUE_DATA_URL_TEMPLATE.format(league="La_liga", year=2024),
+            json=SAMPLE_UNDERSTAT_JSON,
+        )
 
         df = fetch_xg_data(leagues=["EPL", "La_liga"], years=[2024])
 
