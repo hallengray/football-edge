@@ -87,3 +87,36 @@ def test_returns_no_error_when_value_bets_empty(monkeypatch) -> None:
 
     assert result.picks == []
     assert result.error is None  # empty input is not an error
+
+
+def test_returns_picks_when_api_responds_with_valid_json(monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+
+    # OpenRouter wraps the model's content as a JSON-encoded string in choices[0].message.content
+    inner_content = (
+        '{"picks": ['
+        '{"pick_id": 0, "key_reason": "Edge of 6.4% on EPL home_win.", '
+        '"risk": "EPL home_win backtest yield is -10.96% so weak prior.", '
+        '"model_edge_pct": 6.4},'
+        '{"pick_id": 1, "key_reason": "Bundesliga draws have +7.20% backtest yield.", '
+        '"risk": "Sample size 679 is moderate.", '
+        '"model_edge_pct": 9.0}'
+        "]}"
+    )
+    api_response = {"choices": [{"message": {"role": "assistant", "content": inner_content}}]}
+
+    with requests_mock.Mocker() as m:
+        m.post(OPENROUTER_URL, json=api_response, status_code=200)
+        result = explain_top_picks(SAMPLE_VALUE_DF, SAMPLE_BACKTEST)
+
+    assert result.error is None
+    assert len(result.picks) == 2
+    first = result.picks[0]
+    assert isinstance(first, Pick)
+    assert first.pick_id == 0
+    assert first.key_reason.startswith("Edge of 6.4%")
+    assert first.risk.startswith("EPL home_win")
+    assert first.model_edge_pct == pytest.approx(6.4)
+    second = result.picks[1]
+    assert second.pick_id == 1
+    assert second.model_edge_pct == pytest.approx(9.0)
