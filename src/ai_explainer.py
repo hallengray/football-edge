@@ -44,25 +44,73 @@ LEAGUE_DISPLAY = {
     "bundesliga": "Bundesliga",
     "ligue1": "Ligue 1",
 }
+LEAGUE_KEY_BY_DISPLAY = {v: k for k, v in LEAGUE_DISPLAY.items()}
 
 MARKET_KEYS = ["home_win", "draw", "away_win", "over_2.5", "under_2.5"]
 
-SYSTEM_PROMPT = """\
-You are a betting model explainer. You receive a table of value bets identified by
-a calibrated machine-learning model and a summary of the model's historical
-backtest performance per league per market.
+# Maps the dashboard's bet labels (the value-bets row's "outcome" / "Bet" prefix)
+# to backtest market keys, so each row can be paired with its historical yield.
+MARKET_KEY_BY_OUTCOME = {
+    "Home": "home_win",
+    "Draw": "draw",
+    "Away": "away_win",
+    "Over 2.5": "over_2.5",
+    "Under 2.5": "under_2.5",
+}
 
-Your job: pick the top 10 bets and explain each, using ONLY the data provided.
-If fewer than 10 value bets are in the input, return all of them ranked.
-Do not invent stats, recent form, injuries, news, head-to-head history, or
-anything not in the inputs. If you cannot justify a pick from the provided data,
-do not pick it.
+SYSTEM_PROMPT = """\
+You are a betting model explainer. You receive a table of value bets identified
+by a calibrated machine-learning model. Your reader is a smart non-specialist;
+your job is to translate the model's call into plain English, not to repeat
+betting jargon.
+
+The table has these columns:
+- League: which of the five leagues
+- Match: who's playing
+- Bet: the side or outcome being backed
+- model_pct: the probability the model assigns this outcome (e.g. 58.2 = 58.2%)
+- fair_pct: the probability implied by the bookmaker's price after removing
+  their margin
+- edge_pct: model_pct - fair_pct. Positive means the model thinks this outcome
+  is more likely than the bookmaker is pricing it
+- market_yield_pct: how the model has done historically on this league/market.
+  Positive means betting this market with this model returned a profit per
+  pound staked across the model's backtest; negative means it lost money
+- expected_yield_pct: edge_pct + market_yield_pct -- the ranking criterion.
+  Combines the current edge with how the model has actually performed in this
+  market in the past. A positive number means the bet is plausibly profitable;
+  a negative number means even when the edge looks attractive, the model's
+  history in this market suggests it won't pay out
+
+The rows are pre-sorted by expected_yield_pct (descending). The first 10 are
+the right picks unless something is clearly off.
+
+Pick the top 10 (or all of them if fewer than 10 are in the input). Do not
+invent stats, recent form, injuries, news, head-to-head history, or anything
+not in the inputs.
 
 For each pick, output:
 - pick_id: row index from the table
-- key_reason: one sentence on why it stands out, citing only fields in the inputs
-- risk: one sentence on what could go wrong, citing only fields in the inputs
-- model_edge_pct: the edge column value
+- key_reason: ONE sentence on why this bet stands out, in PLAIN ENGLISH for a
+  smart friend who isn't a betting professional. Translate the numbers into
+  meaning instead of quoting them raw. Cite specific values when they're load-
+  bearing, but explain what each one means.
+- risk: ONE sentence on what could go wrong, also in plain English.
+- model_edge_pct: the edge_pct column value
+
+GOOD style (plain English, explained):
+  key_reason: "When this model has flagged a Bundesliga draw as a value bet
+  before, those bets returned about 7p of profit per pound staked across 679
+  matches -- the strongest pattern in the model's whole history -- and this
+  draw price gives the model a 9-point gap over the bookmaker, so the combined
+  picture is the most attractive call this week."
+  risk: "Draws are inherently low-frequency events; even with a clear edge,
+  most weeks you go home with nothing."
+
+BAD style (jargon-only, do not write like this):
+  key_reason: "Bundesliga draw +9% edge with +7.20% backtest yield, +16.2%
+  expected, n=679."
+  risk: "Variance high; sample n=679."
 
 Output only this JSON, nothing else:
 {"picks": [{"pick_id": int, "key_reason": str, "risk": str, "model_edge_pct": float}, ...]}
@@ -107,23 +155,71 @@ def _format_backtest(backtest: dict) -> str:
     return "\n".join(lines)
 
 
+def _bet_to_market_key(bet_label: str) -> str | None:
+    """Resolve a value-bets row's Bet label to its backtest market key.
+
+    The dashboard renders Bet as "Home: <team>", "Away: <team>", "Draw",
+    "Over 2.5", or "Under 2.5". We strip the colon-suffix for h2h bets and
+    look up the canonical market key.
+    """
+    head = bet_label.split(":", 1)[0].strip()
+    return MARKET_KEY_BY_OUTCOME.get(head)
+
+
+def compute_expected_yield(value_df: pd.DataFrame, backtest: dict) -> pd.DataFrame:
+    """Augment value_df with `_market_yield_pct` and `_expected_yield_pct` columns.
+
+    market_yield_pct: the backtest yield_pct for the row's (league, market) pair.
+    Defaults to 0.0 when the league or market isn't in the backtest summary
+    (e.g., a league with no historical data) -- that way unknown markets fall
+    back to ranking purely by raw edge instead of being penalised.
+
+    expected_yield_pct: edge_pct + market_yield_pct. Combines the current bet's
+    edge with how the model has historically performed in that specific market.
+    A bet with a high raw edge but a strongly negative market yield will sink
+    in the ranking; a bet with a moderate edge in a profitable market will
+    rise. This is the column the AI ranks on.
+    """
+    df = value_df.copy()
+    leagues_data = backtest.get("leagues", {})
+
+    market_yields: list[float] = []
+    for _, row in df.iterrows():
+        league_key = LEAGUE_KEY_BY_DISPLAY.get(row["League"])
+        market_key = _bet_to_market_key(row["Bet"])
+        if league_key is None or market_key is None:
+            market_yields.append(0.0)
+            continue
+        stats = leagues_data.get(league_key, {}).get("markets", {}).get(market_key, {})
+        market_yields.append(float(stats.get("yield_pct", 0.0)))
+
+    df["_market_yield_pct"] = market_yields
+    df["_expected_yield_pct"] = df["_value_pct"] * 100 + df["_market_yield_pct"]
+    return df
+
+
 def _format_value_bets(df: pd.DataFrame) -> str:
     """Render the value-bets DataFrame as a markdown-style table for the user prompt.
 
-    Numerical columns are rendered as plain floats (no `%`, no `+` prefix) so the
-    AI can echo them back as JSON numbers without parsing.
+    Expects the df to already have `_market_yield_pct` and `_expected_yield_pct`
+    columns (produced by `compute_expected_yield`). Numerical columns are
+    rendered as plain floats (no `%`, no `+` prefix) so the AI can echo them
+    back as JSON numbers without parsing.
     """
     lines = [
-        "Value bets identified for this week:",
-        "| idx | League | Match | Bet | model_pct | fair_pct | edge_pct |",
+        "Value bets identified for this week (sorted by expected_yield_pct desc):",
+        "| idx | League | Match | Bet | model_pct | fair_pct | edge_pct | market_yield_pct | expected_yield_pct |",
     ]
     for idx, row in df.iterrows():
         model_pct = row["_model_prob"] * 100
         edge_pct = row["_value_pct"] * 100
         fair_pct = model_pct - edge_pct
+        market_yield = row["_market_yield_pct"]
+        expected_yield = row["_expected_yield_pct"]
         lines.append(
             f"| {idx} | {row['League']} | {row['Match']} | {row['Bet']} | "
-            f"{model_pct:.1f} | {fair_pct:.1f} | {edge_pct:.1f} |"
+            f"{model_pct:.1f} | {fair_pct:.1f} | {edge_pct:.1f} | "
+            f"{market_yield:+.2f} | {expected_yield:+.2f} |"
         )
     return "\n".join(lines)
 
@@ -133,7 +229,7 @@ def _build_user_prompt(value_bets_df: pd.DataFrame, backtest: dict) -> str:
         _format_backtest(backtest)
         + "\n\n"
         + _format_value_bets(value_bets_df)
-        + "\n\nPick the top 10."
+        + "\n\nPick the top 10. Explain each pick in plain English."
     )
 
 
@@ -180,6 +276,19 @@ def explain_top_picks(
 
     if value_bets_df.empty:
         return ExplainerResult(picks=[], error=None)
+
+    # Pre-rank by expected_yield_pct (edge + historical market yield) so the AI
+    # sees the rows in the order it should pick from. This stops a lazy model
+    # from just echoing back the input order when the input was sorted by raw
+    # edge -- raw edge alone ignores how the model actually performs per market.
+    # Idempotent: callers (like app.py) can pre-compute and pre-sort, in which
+    # case this is a no-op. Tests pass un-augmented fixtures and rely on the
+    # fallback path here.
+    if "_expected_yield_pct" not in value_bets_df.columns:
+        value_bets_df = compute_expected_yield(value_bets_df, backtest_summary)
+        value_bets_df = value_bets_df.sort_values(
+            "_expected_yield_pct", ascending=False
+        ).reset_index(drop=True)
 
     if len(value_bets_df) > MAX_PROMPT_BETS:
         value_bets_df = value_bets_df.head(MAX_PROMPT_BETS)

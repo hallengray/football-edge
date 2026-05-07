@@ -10,6 +10,7 @@ from src.ai_explainer import (
     OPENROUTER_URL,
     ExplainerResult,
     Pick,
+    compute_expected_yield,
     explain_top_picks,
 )
 
@@ -147,8 +148,54 @@ def test_prompt_includes_backtest_yields_and_value_bets(monkeypatch) -> None:
     assert "| 0 |" in user_message  # row indices rendered
 
     # Pre-formatted numbers (no `%` or `+` in the data cells)
-    assert "| 6.4 |" in user_message  # edge for row 0
-    assert "| 9.0 |" in user_message  # edge for row 1
+    assert "| 6.4 |" in user_message  # edge for the Liverpool row (now at row 2)
+    assert "| 9.0 |" in user_message  # edge for the Bayern row (now at row 0)
+
+    # Per-row historical-yield columns added so the AI doesn't have to
+    # cross-reference the backtest summary section manually.
+    assert "market_yield_pct" in user_message
+    assert "expected_yield_pct" in user_message
+    # Bayern draw row (now idx 0): edge 9.0 + Bundesliga draw yield +7.20 = +16.20 expected.
+    assert "| +7.20 |" in user_message  # market_yield for the Bundesliga draw row
+    assert "| +16.20 |" in user_message  # expected_yield for that row
+
+
+def test_compute_expected_yield_combines_edge_with_market_yield() -> None:
+    """expected_yield_pct = edge_pct + market_yield_pct (additive blend)."""
+    df = compute_expected_yield(SAMPLE_VALUE_DF, SAMPLE_BACKTEST)
+
+    # Bayern draw: edge 9.0 + Bundesliga draw yield +7.20 = +16.20 expected
+    bayern = df[df["Match"] == "Bayern Munich vs Borussia Dortmund"].iloc[0]
+    assert bayern["_market_yield_pct"] == pytest.approx(7.20)
+    assert bayern["_expected_yield_pct"] == pytest.approx(16.20)
+
+    # Liverpool home_win: edge 6.4 + EPL home_win yield -10.96 = -4.56 expected
+    liverpool = df[df["Match"] == "Liverpool vs Chelsea"].iloc[0]
+    assert liverpool["_market_yield_pct"] == pytest.approx(-10.96)
+    assert liverpool["_expected_yield_pct"] == pytest.approx(-4.56)
+
+    # Lyon over_2.5: edge 5.2 + Ligue 1 over_2.5 yield +0.27 = +5.47 expected
+    lyon = df[df["Match"] == "Lyon vs Paris Saint-Germain"].iloc[0]
+    assert lyon["_market_yield_pct"] == pytest.approx(0.27)
+    assert lyon["_expected_yield_pct"] == pytest.approx(5.47)
+
+
+def test_compute_expected_yield_defaults_to_zero_for_unknown_market() -> None:
+    """A league or market not in the backtest summary must default to 0% market yield
+    so the bet falls back to ranking purely by raw edge instead of being penalised."""
+    df = pd.DataFrame(
+        {
+            "League": ["Some Made-Up League"],
+            "Match": ["Foo vs Bar"],
+            "Bet": ["Draw"],
+            "Best odds": ["3.40"],
+            "_model_prob": [0.40],
+            "_value_pct": [0.10],
+        }
+    )
+    out = compute_expected_yield(df, SAMPLE_BACKTEST)
+    assert out["_market_yield_pct"].iloc[0] == 0.0
+    assert out["_expected_yield_pct"].iloc[0] == pytest.approx(10.0)  # just the edge
 
 
 def test_handles_429_rate_limit_gracefully(monkeypatch) -> None:

@@ -25,7 +25,7 @@ from src.database import (
 from src.odds import best_odds_for_outcome, get_big5_odds
 from src.predictions import Models, load_models, predict_fixture
 from src.value import assess_value, remove_bookmaker_margin
-from src.ai_explainer import ExplainerResult, explain_top_picks
+from src.ai_explainer import ExplainerResult, compute_expected_yield, explain_top_picks
 
 logger = logging.getLogger(__name__)
 
@@ -354,9 +354,18 @@ def render_fixtures_tab() -> None:
         st.markdown(f"### 🎯 Value bets ({len(value_df)})")
 
         if st.button("🤖 Get AI picks", type="primary"):
-            value_df_reset = value_df.reset_index(drop=True)
+            backtest = _models.backtest or {}
+            # Pre-rank by expected_yield_pct (edge + historical market yield) so
+            # the AI sees rows in the order it should pick from, AND so the
+            # renderer's iloc lookup against value_df_reset matches the AI's
+            # pick_id space exactly.
+            value_df_reset = (
+                compute_expected_yield(value_df.reset_index(drop=True), backtest)
+                .sort_values("_expected_yield_pct", ascending=False)
+                .reset_index(drop=True)
+            )
             with st.spinner("Asking the AI to rank these picks…"):
-                result = explain_top_picks(value_df_reset, _models.backtest or {})
+                result = explain_top_picks(value_df_reset, backtest)
             _render_ai_picks(result, value_df_reset)
 
         st.dataframe(
