@@ -29,8 +29,8 @@ def main() -> None:
 
     print("Downloading football-data CSVs (cached after first run)...")
     matches = download_training_data(leagues=fd_leagues, years=training_years)
-    fd_names = set(matches["HomeTeam"].dropna().unique()) | set(
-        matches["AwayTeam"].dropna().unique()
+    fd_names = set(matches["home_team"].dropna().unique()) | set(
+        matches["away_team"].dropna().unique()
     )
 
     print("Scraping Understat (cached after first run, ~60s on first run)...")

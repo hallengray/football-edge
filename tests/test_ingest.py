@@ -25,11 +25,24 @@ def test_training_url_template_has_expected_placeholders() -> None:
     )
 
 
+# The sports-betting GitHub mirror serves snake_case columns; ingest normalises
+# them to the legacy football-data schema. These fixtures match the real upstream.
+MIRROR_HEADER = (
+    "date,home_team,away_team,"
+    "target__home_team__full_time_goals,target__away_team__full_time_goals,"
+    "odds__market_average__home_win__full_time_goals,"
+    "odds__market_average__draw__full_time_goals,"
+    "odds__market_average__away_win__full_time_goals,"
+    "odds__market_average__over_2.5__full_time_goals,"
+    "odds__market_average__under_2.5__full_time_goals"
+)
+
+
 def test_download_training_data_concatenates_seasons(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("src.ingest.football_data.CACHE_DIR", tmp_path)
 
-    csv_2023 = "Date,HomeTeam,AwayTeam,FTHG,FTAG\n2023-08-15,Arsenal,Chelsea,2,1\n"
-    csv_2024 = "Date,HomeTeam,AwayTeam,FTHG,FTAG\n2024-08-15,Liverpool,Everton,3,0\n"
+    csv_2023 = f"{MIRROR_HEADER}\n2023-08-15,Arsenal,Chelsea,2,1,2.10,3.40,3.60,1.95,1.95\n"
+    csv_2024 = f"{MIRROR_HEADER}\n2024-08-15,Liverpool,Everton,3,0,1.50,4.20,7.00,1.80,2.05\n"
 
     with requests_mock.Mocker() as m:
         m.get(TRAINING_URL_TEMPLATE.format(league="England", division=1, year=2023), text=csv_2023)
@@ -38,28 +51,36 @@ def test_download_training_data_concatenates_seasons(tmp_path, monkeypatch) -> N
         df = download_training_data(leagues=["England"], years=[2023, 2024])
 
     assert len(df) == 2
-    assert set(df["HomeTeam"]) == {"Arsenal", "Liverpool"}
+    assert set(df["home_team"]) == {"Arsenal", "Liverpool"}
+    # Mirror columns must be normalised to legacy schema before downstream code sees them.
+    assert "FTHG" in df.columns
+    assert "FTAG" in df.columns
+    assert "AvgH" in df.columns
+    assert "AvgOver2.5" in df.columns
+    assert "AvgUnder2.5" in df.columns
+    assert "target__home_team__full_time_goals" not in df.columns
 
 
 def test_download_training_data_uses_cache_on_second_call(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("src.ingest.football_data.CACHE_DIR", tmp_path)
 
-    csv_text = "Date,HomeTeam,AwayTeam,FTHG,FTAG\n2023-08-15,Arsenal,Chelsea,2,1\n"
+    csv_text = f"{MIRROR_HEADER}\n2023-08-15,Arsenal,Chelsea,2,1,2.10,3.40,3.60,1.95,1.95\n"
 
     with requests_mock.Mocker() as m:
         m.get(TRAINING_URL_TEMPLATE.format(league="England", division=1, year=2023), text=csv_text)
         download_training_data(leagues=["England"], years=[2023])
         assert m.call_count == 1
 
-        # Second call — should hit cache, no new HTTP request
-        download_training_data(leagues=["England"], years=[2023])
+        # Second call — should hit cache, no new HTTP request, and still return normalised columns.
+        df = download_training_data(leagues=["England"], years=[2023])
         assert m.call_count == 1
+        assert "FTHG" in df.columns
 
 
 def test_download_training_data_skips_failed_seasons(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("src.ingest.football_data.CACHE_DIR", tmp_path)
 
-    csv_text = "Date,HomeTeam,AwayTeam,FTHG,FTAG\n2024-08-15,Liverpool,Everton,3,0\n"
+    csv_text = f"{MIRROR_HEADER}\n2024-08-15,Liverpool,Everton,3,0,1.50,4.20,7.00,1.80,2.05\n"
 
     with requests_mock.Mocker() as m:
         m.get(

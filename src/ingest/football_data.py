@@ -39,6 +39,25 @@ FIXTURES_URL = (
 REQUEST_TIMEOUT = 30
 RETRY_SLEEP = 5
 
+# The sports-betting GitHub mirror serves CSVs in a normalised snake_case
+# schema. The rest of the v2 pipeline (features, training, tests) was written
+# against football-data.co.uk's raw schema (FTHG, AvgH, etc.). Renaming once
+# at ingest keeps downstream code unchanged. Idempotent — already-renamed
+# columns are passed through.
+MIRROR_TO_LEGACY_COLUMNS: dict[str, str] = {
+    "target__home_team__full_time_goals": "FTHG",
+    "target__away_team__full_time_goals": "FTAG",
+    "odds__market_average__home_win__full_time_goals": "AvgH",
+    "odds__market_average__draw__full_time_goals": "AvgD",
+    "odds__market_average__away_win__full_time_goals": "AvgA",
+    "odds__market_average__over_2.5__full_time_goals": "AvgOver2.5",
+    "odds__market_average__under_2.5__full_time_goals": "AvgUnder2.5",
+}
+
+
+def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
+    return df.rename(columns=MIRROR_TO_LEGACY_COLUMNS)
+
 
 def _cache_path(league: str, division: int, year: int) -> Path:
     return CACHE_DIR / f"{league}_{division}_{year}.csv"
@@ -56,7 +75,7 @@ def _download_one_season(
     """
     cache_file = _cache_path(league, division, year)
     if cache_file.exists() and not force_refresh:
-        return pd.read_csv(cache_file)
+        return _normalise_columns(pd.read_csv(cache_file))
 
     url = TRAINING_URL_TEMPLATE.format(league=league, division=division, year=year)
 
@@ -70,7 +89,7 @@ def _download_one_season(
             df = pd.read_csv(StringIO(resp.text))
             CACHE_DIR.mkdir(parents=True, exist_ok=True)
             df.to_csv(cache_file, index=False)
-            return df
+            return _normalise_columns(df)
         except (requests.RequestException, pd.errors.ParserError) as e:
             if attempt == 1:
                 logger.warning(
