@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import pandas as pd
-import pytest  # noqa: F401  # used by future tests in this module
+import pytest
 import requests_mock
 
 from src.ai_explainer import (
-    OPENROUTER_URL,  # noqa: F401  # exported symbol; asserted by future tests
+    OPENROUTER_URL,
     ExplainerResult,
-    Pick,  # noqa: F401  # exported symbol; asserted by future tests
+    Pick,
     explain_top_picks,
 )
 
@@ -120,3 +120,30 @@ def test_returns_picks_when_api_responds_with_valid_json(monkeypatch) -> None:
     second = result.picks[1]
     assert second.pick_id == 1
     assert second.model_edge_pct == pytest.approx(9.0)
+
+
+def test_prompt_includes_backtest_yields_and_value_bets(monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    inner_content = '{"picks": []}'
+    api_response = {"choices": [{"message": {"role": "assistant", "content": inner_content}}]}
+
+    with requests_mock.Mocker() as m:
+        m.post(OPENROUTER_URL, json=api_response, status_code=200)
+        explain_top_picks(SAMPLE_VALUE_DF, SAMPLE_BACKTEST)
+        request_body = m.last_request.json()
+
+    user_message = next(msg["content"] for msg in request_body["messages"] if msg["role"] == "user")
+
+    # Backtest summary must be in the prompt
+    assert "Bundesliga" in user_message
+    assert "draw: +7.20%" in user_message  # the standout signal from the backtest
+    assert "/ 679" in user_message  # n_bets for that draw market
+
+    # Value-bets table must be in the prompt
+    assert "Liverpool vs Chelsea" in user_message
+    assert "Bayern Munich vs Borussia Dortmund" in user_message
+    assert "| 0 |" in user_message  # row indices rendered
+
+    # Pre-formatted numbers (no `%` or `+` in the data cells)
+    assert "| 6.4 |" in user_message  # edge for row 0
+    assert "| 9.0 |" in user_message  # edge for row 1
