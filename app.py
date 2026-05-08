@@ -456,7 +456,7 @@ def _render_ai_panel(
 
 
 def render_fixtures_tab() -> None:
-    st.markdown("## Upcoming Premier League fixtures")
+    st.markdown("## Upcoming Big-5 fixtures")
 
     col1, col2 = st.columns([1, 5])
     with col1:
