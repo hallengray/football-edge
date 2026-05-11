@@ -365,9 +365,56 @@ def _build_upcoming_fixtures_for_features(matches_raw: pd.DataFrame) -> pd.DataF
     return fixtures_df
 
 
+def _split_features_into_training_and_upcoming(
+    matches_raw: pd.DataFrame,
+    upcoming_fixtures: pd.DataFrame,
+    xg_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Compute features once on training+upcoming, then split using a marker column.
+
+    Why a marker, not iloc-based slicing: ``compute_features`` reorders rows
+    internally (``sort_values`` + ``reset_index`` happen inside
+    ``_add_rest_features`` and ``_add_strength_of_schedule``). A positional
+    ``iloc[n_training:]`` after that reordering picks up whatever rows happen
+    to be at the end of the sort key, NOT the upcoming fixtures we appended.
+
+    This was the May 2026 bug where ``fixtures_data.parquet`` ended up
+    Spain-only — the final sort key was ``['league', 'year', 'date']`` and
+    Spain (alphabetically last among Big-5 league names) occupied the tail
+    of the dataframe. Upcoming fixtures from the other four leagues were
+    silently absent from the parquet, causing ``predict_fixture`` to fall
+    back to demo mode for those leagues.
+
+    The marker column travels with each row through compute_features so the
+    split survives any internal reorder or row-drop.
+    """
+    from src.features import compute_features
+
+    matches_raw = matches_raw.assign(_is_upcoming=False)
+    if upcoming_fixtures.empty:
+        combined = matches_raw
+    else:
+        upcoming_fixtures = upcoming_fixtures.assign(_is_upcoming=True)
+        combined = pd.concat([matches_raw, upcoming_fixtures], ignore_index=True)
+
+    combined_features = compute_features(combined, xg_df)
+    is_upcoming_mask = combined_features["_is_upcoming"].astype(bool)
+
+    training_features = (
+        combined_features.loc[~is_upcoming_mask]
+        .drop(columns=["_is_upcoming"])
+        .reset_index(drop=True)
+    )
+    upcoming_features = (
+        combined_features.loc[is_upcoming_mask]
+        .drop(columns=["_is_upcoming"])
+        .reset_index(drop=True)
+    )
+    return training_features, upcoming_features
+
+
 def main() -> None:
     """Train all five per-league bettors end-to-end and persist artifacts."""
-    from src.features import compute_features
     from src.ingest.football_data import download_training_data
     from src.ingest.understat import fetch_xg_data
 
@@ -400,17 +447,12 @@ def main() -> None:
     # 2. Feature engineering -- combine training + upcoming so compute_features sees
     # full history when computing rolling features for upcoming-fixture rows.
     # compute_features uses shift(1), so the upcoming-fixture rows' OWN placeholder
-    # outcomes don't pollute their own features.
+    # outcomes don't pollute their own features. The split uses a marker column
+    # because compute_features reorders rows internally (see helper docstring).
     print("\n[3/5] Computing engineered features...")
-    if not upcoming_fixtures.empty:
-        combined = pd.concat([matches_raw, upcoming_fixtures], ignore_index=True)
-    else:
-        combined = matches_raw
-    combined_features = compute_features(combined, xg_df)
-
-    n_training = len(matches_raw)
-    features_df = combined_features.iloc[:n_training].reset_index(drop=True)
-    fixtures_features_df = combined_features.iloc[n_training:].reset_index(drop=True)
+    features_df, fixtures_features_df = _split_features_into_training_and_upcoming(
+        matches_raw, upcoming_fixtures, xg_df
+    )
     print(f"  Training features shape: {features_df.shape}")
     print(f"  Fixtures features shape: {fixtures_features_df.shape}")
 

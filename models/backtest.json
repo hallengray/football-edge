@@ -1,5 +1,5 @@
 {
-  "trained_at": "2026-05-07T10:02:56.001769Z",
+  "trained_at": "2026-05-11T17:31:58.114323Z",
   "training_seasons": [
     2018,
     2019,
@@ -14,127 +14,127 @@
   "n_training_matches": 14359,
   "leagues": {
     "epl": {
-      "n_matches": 3059,
+      "n_matches": 3040,
       "markets": {
         "home_win": {
-          "n_bets": 842,
-          "yield_pct": -10.96
+          "n_bets": 700,
+          "yield_pct": -4.8
         },
         "draw": {
-          "n_bets": 507,
-          "yield_pct": -12.79
+          "n_bets": 511,
+          "yield_pct": -3.79
         },
         "away_win": {
-          "n_bets": 1289,
-          "yield_pct": -5.08
+          "n_bets": 1226,
+          "yield_pct": -3.59
         },
         "over_2.5": {
-          "n_bets": 430,
-          "yield_pct": -11.92
+          "n_bets": 405,
+          "yield_pct": -11.94
         },
         "under_2.5": {
           "n_bets": 820,
-          "yield_pct": -2.9
+          "yield_pct": -2.3
         }
       }
     },
     "laliga": {
-      "n_matches": 2982,
+      "n_matches": 3040,
       "markets": {
         "home_win": {
-          "n_bets": 860,
-          "yield_pct": -9.17
+          "n_bets": 884,
+          "yield_pct": -12.54
         },
         "draw": {
-          "n_bets": 895,
-          "yield_pct": -6.11
+          "n_bets": 937,
+          "yield_pct": -7.77
         },
         "away_win": {
-          "n_bets": 733,
-          "yield_pct": -26.19
+          "n_bets": 641,
+          "yield_pct": -25.09
         },
         "over_2.5": {
-          "n_bets": 638,
-          "yield_pct": -8.64
+          "n_bets": 714,
+          "yield_pct": -12.04
         },
         "under_2.5": {
-          "n_bets": 628,
-          "yield_pct": -5.37
+          "n_bets": 574,
+          "yield_pct": -5.45
         }
       }
     },
     "seriea": {
-      "n_matches": 3060,
+      "n_matches": 3040,
       "markets": {
         "home_win": {
-          "n_bets": 521,
-          "yield_pct": -26.06
+          "n_bets": 544,
+          "yield_pct": -25.84
         },
         "draw": {
-          "n_bets": 927,
-          "yield_pct": -3.58
+          "n_bets": 769,
+          "yield_pct": -0.41
         },
         "away_win": {
-          "n_bets": 889,
-          "yield_pct": -11.4
+          "n_bets": 880,
+          "yield_pct": -10.71
         },
         "over_2.5": {
-          "n_bets": 882,
-          "yield_pct": -7.9
+          "n_bets": 899,
+          "yield_pct": -9.65
         },
         "under_2.5": {
-          "n_bets": 360,
-          "yield_pct": -3.77
+          "n_bets": 365,
+          "yield_pct": -9.68
         }
       }
     },
     "bundesliga": {
-      "n_matches": 2457,
+      "n_matches": 2448,
       "markets": {
         "home_win": {
-          "n_bets": 615,
-          "yield_pct": -1.18
+          "n_bets": 670,
+          "yield_pct": 1.6
         },
         "draw": {
-          "n_bets": 679,
-          "yield_pct": 7.2
+          "n_bets": 591,
+          "yield_pct": 7.84
         },
         "away_win": {
-          "n_bets": 869,
-          "yield_pct": -12.92
+          "n_bets": 847,
+          "yield_pct": -18.28
         },
         "over_2.5": {
-          "n_bets": 725,
-          "yield_pct": -3.74
+          "n_bets": 769,
+          "yield_pct": -4.62
         },
         "under_2.5": {
-          "n_bets": 316,
-          "yield_pct": -22.73
+          "n_bets": 285,
+          "yield_pct": -18.36
         }
       }
     },
     "ligue1": {
-      "n_matches": 2801,
+      "n_matches": 2791,
       "markets": {
         "home_win": {
-          "n_bets": 590,
-          "yield_pct": -10.78
+          "n_bets": 573,
+          "yield_pct": -7.59
         },
         "draw": {
-          "n_bets": 491,
-          "yield_pct": -9.56
+          "n_bets": 506,
+          "yield_pct": -12.8
         },
         "away_win": {
-          "n_bets": 740,
-          "yield_pct": 1.62
+          "n_bets": 750,
+          "yield_pct": 5.16
         },
         "over_2.5": {
-          "n_bets": 376,
-          "yield_pct": 0.27
+          "n_bets": 383,
+          "yield_pct": 1.35
         },
         "under_2.5": {
-          "n_bets": 598,
-          "yield_pct": -11.72
+          "n_bets": 578,
+          "yield_pct": -10.18
         }
       }
     }

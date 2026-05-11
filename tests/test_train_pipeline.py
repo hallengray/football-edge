@@ -16,6 +16,7 @@ import pytest
 
 from scripts.train_model import (
     BIG_5_LEAGUES,
+    _split_features_into_training_and_upcoming,
     run_backtest_cv,
     write_artifacts_atomically,
 )
@@ -104,6 +105,109 @@ def test_atomic_write_creates_seven_artifacts(tmp_path, monkeypatch) -> None:
     assert (tmp_path / "backtest.json").exists()
     with (tmp_path / "backtest.json").open() as f:
         assert json.load(f)["trained_at"] == "2026-05-06T00:00:00Z"
+
+
+def _synthetic_match(date: str, home: str, away: str, league: str) -> dict:
+    return {
+        "date": date,
+        "home_team": home,
+        "away_team": away,
+        "FTHG": 1,
+        "FTAG": 1,
+        "HST": 5,
+        "AST": 5,
+        "league": league,
+        "year": int(date[:4]),
+    }
+
+
+def _synthetic_xg_for(matches: list[dict]) -> pd.DataFrame:
+    """Build a matching xG DataFrame so _add_xg_features has numeric inputs."""
+    return pd.DataFrame(
+        [
+            {
+                "date": m["date"],
+                "home_team": m["home_team"],
+                "away_team": m["away_team"],
+                "home_xg": 1.2,
+                "away_xg": 1.0,
+            }
+            for m in matches
+        ]
+    )
+
+
+def test_split_recovers_all_upcoming_fixtures_across_all_leagues() -> None:
+    """Regression test for the May 2026 fixtures_data.parquet Spain-only bug.
+
+    compute_features sorts internally by ['league', 'year', 'date'] inside
+    _add_strength_of_schedule. The previous iloc[n_training:] split therefore
+    grabbed only rows from the alphabetically-last league (Spain), silently
+    dropping upcoming fixtures from England, France, Germany, Italy. The fix
+    uses a marker column so the split survives any internal row reordering.
+
+    This test fails on the old iloc-based logic and passes on the marker logic.
+    """
+    # Use real registry team names so _normalise_team_names doesn't drop rows.
+    training_matches = [
+        # England — 4 matches across 2 dates so rolling windows have history
+        _synthetic_match("2025-08-15", "Arsenal", "Chelsea", "England"),
+        _synthetic_match("2025-08-22", "Liverpool", "Arsenal", "England"),
+        _synthetic_match("2025-08-29", "Chelsea", "Liverpool", "England"),
+        _synthetic_match("2025-09-05", "Arsenal", "Liverpool", "England"),
+        # Spain
+        _synthetic_match("2025-08-15", "Real Madrid", "Barcelona", "Spain"),
+        _synthetic_match("2025-08-22", "Sevilla", "Real Madrid", "Spain"),
+        _synthetic_match("2025-08-29", "Barcelona", "Sevilla", "Spain"),
+        _synthetic_match("2025-09-05", "Real Madrid", "Sevilla", "Spain"),
+    ]
+    matches_raw = pd.DataFrame(training_matches)
+
+    # One upcoming fixture per league — dated AFTER all training matches.
+    upcoming_matches = [
+        _synthetic_match("2026-05-08", "Arsenal", "Chelsea", "England"),
+        _synthetic_match("2026-05-08", "Real Madrid", "Barcelona", "Spain"),
+    ]
+    upcoming_fixtures = pd.DataFrame(upcoming_matches)
+
+    # xG covers training matches only; upcoming xG isn't known yet.
+    xg_df = _synthetic_xg_for(training_matches)
+
+    training_features, upcoming_features = _split_features_into_training_and_upcoming(
+        matches_raw, upcoming_fixtures, xg_df
+    )
+
+    # Marker column must not leak into either output.
+    assert "_is_upcoming" not in training_features.columns
+    assert "_is_upcoming" not in upcoming_features.columns
+
+    # Every upcoming-fixture league must be recovered.
+    assert set(upcoming_features["league"].unique()) == {"England", "Spain"}
+    assert len(upcoming_features) == 2
+
+    # Training output should contain exactly the historical rows, none of the
+    # upcoming dates.
+    assert (upcoming_features["date"] >= pd.Timestamp("2026-01-01")).all()
+    assert (training_features["date"] < pd.Timestamp("2026-01-01")).all()
+
+
+def test_split_handles_empty_upcoming_fixtures() -> None:
+    """Off-season case: get_big5_odds may return zero upcoming fixtures."""
+    training_matches = [
+        _synthetic_match("2025-08-15", "Arsenal", "Chelsea", "England"),
+        _synthetic_match("2025-08-22", "Liverpool", "Arsenal", "England"),
+    ]
+    matches_raw = pd.DataFrame(training_matches)
+    upcoming_fixtures = pd.DataFrame()
+    xg_df = _synthetic_xg_for(training_matches)
+
+    training_features, upcoming_features = _split_features_into_training_and_upcoming(
+        matches_raw, upcoming_fixtures, xg_df
+    )
+
+    assert len(training_features) == 2
+    assert len(upcoming_features) == 0
+    assert "_is_upcoming" not in training_features.columns
 
 
 def test_atomic_write_no_partial_state_when_one_pickle_fails(tmp_path, monkeypatch) -> None:
