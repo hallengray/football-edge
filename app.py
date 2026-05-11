@@ -433,17 +433,22 @@ def _render_ai_panel(
     )
 
     if result_draws is not None:
-        _render_pick_section(
-            "🎯 Top 5 Draws (the model's strongest backtest signal)",
-            result_draws,
-            group_by_league=False,
+        n = len(result_draws.picks)
+        suffix = "(the model's strongest backtest signal)"
+        draws_label = (
+            f"🎯 Top {n} Draw{'s' if n != 1 else ''} {suffix}"
+            if n > 0
+            else f"🎯 Top Draws {suffix}"
         )
+        _render_pick_section(draws_label, result_draws, group_by_league=False)
     if result_mixed is not None:
-        _render_pick_section(
-            "📊 Top 10 Across All Markets",
-            result_mixed,
-            group_by_league=True,
+        n = len(result_mixed.picks)
+        mixed_label = (
+            f"📊 Top {n} Pick{'s' if n != 1 else ''} Across Markets"
+            if n > 0
+            else "📊 Top Picks Across Markets"
         )
+        _render_pick_section(mixed_label, result_mixed, group_by_league=True)
 
     # Single bulk-log button across both sections. Dedupes by (fixture, market,
     # outcome) so a Bayern draw appearing in both sections only logs once.
