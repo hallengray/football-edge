@@ -25,7 +25,12 @@ from src.database import (
 )
 from src.odds import best_odds_for_outcome, get_big5_odds
 from src.predictions import Models, load_models, predict_fixture
-from src.value import assess_value, remove_bookmaker_margin
+from src.value import (
+    assess_value,
+    is_in_profitable_market_set,
+    mask_demo_display_fields,
+    remove_bookmaker_margin,
+)
 from src.ai_explainer import (
     ExplainerResult,
     Pick,
@@ -190,6 +195,8 @@ def _build_rows(
     """
     rows: list[dict] = []
 
+    demo_fallback_leagues: set[str] = set()
+
     for fixture in fixtures:
         home_team = fixture.get("home_team")
         away_team = fixture.get("away_team")
@@ -199,6 +206,15 @@ def _build_rows(
         # default to epl for legacy fixtures missing the field
         league = fixture.get("league", "epl")
         pred = predict_fixture(models, league, home_team, away_team)
+        if pred.is_demo and league not in demo_fallback_leagues:
+            demo_fallback_leagues.add(league)
+            logger.warning(
+                "Demo-mode fallback for league %s (first hit: %s vs %s). "
+                "Predictions for this league will be suppressed as value bets.",
+                league,
+                home_team,
+                away_team,
+            )
 
         home_odds = best_odds_for_outcome(fixture, "h2h", home_team)
         away_odds = best_odds_for_outcome(fixture, "h2h", away_team)
@@ -245,34 +261,39 @@ def _build_rows(
                 fair_implied_prob=fair_prob,
                 value_threshold=threshold,
                 kelly_multiplier=kelly_mult,
+                is_demo=pred.is_demo,
             )
-            rows.append(
-                {
-                    "fixture_id": fixture.get("id", f"{home_team}-{away_team}"),
-                    "kickoff": fixture.get("commence_time", ""),
-                    "home_team": home_team,
-                    "away_team": away_team,
-                    "market": market,
-                    "outcome": label,
-                    "outcome_label": outcome_name,
-                    "League": LEAGUE_DISPLAY_NAMES.get(league, league),
-                    "Match": f"{home_team} vs {away_team}",
-                    "Kickoff": (fixture.get("commence_time", "")[:16] or "").replace("T", " "),
-                    "Bet": f"{label}: {outcome_name}" if market == "h2h" else label,
-                    "Model %": f"{model_prob * 100:.1f}%",
-                    "Fair %": f"{fair_prob * 100:.1f}%",
-                    "Best odds": f"{decimal_odds:.2f}",
-                    "Bookmaker": book,
-                    "Edge": f"{assessment.value_pct * 100:+.1f}%",
-                    "Kelly stake": f"{assessment.kelly_stake_fraction * 100:.2f}%",
-                    "_value_pct": assessment.value_pct,
-                    "_model_prob": model_prob,
-                    "_decimal_odds": decimal_odds,
-                    "_bookmaker": book,
-                    "_kelly_fraction": assessment.kelly_stake_fraction,
-                    "_is_value": assessment.is_value_bet,
-                }
-            )
+            # Hard profitability gate: even a clean edge gets demoted if the
+            # (league, outcome) pair is not one of the backtest-profitable markets.
+            if assessment.is_value_bet and not is_in_profitable_market_set(league, label):
+                assessment.is_value_bet = False
+            row = {
+                "fixture_id": fixture.get("id", f"{home_team}-{away_team}"),
+                "kickoff": fixture.get("commence_time", ""),
+                "home_team": home_team,
+                "away_team": away_team,
+                "market": market,
+                "outcome": label,
+                "outcome_label": outcome_name,
+                "League": LEAGUE_DISPLAY_NAMES.get(league, league),
+                "Match": f"{home_team} vs {away_team}",
+                "Kickoff": (fixture.get("commence_time", "")[:16] or "").replace("T", " "),
+                "Bet": f"{label}: {outcome_name}" if market == "h2h" else label,
+                "Model %": f"{model_prob * 100:.1f}%",
+                "Fair %": f"{fair_prob * 100:.1f}%",
+                "Best odds": f"{decimal_odds:.2f}",
+                "Bookmaker": book,
+                "Edge": f"{assessment.value_pct * 100:+.1f}%",
+                "Kelly stake": f"{assessment.kelly_stake_fraction * 100:.2f}%",
+                "_value_pct": assessment.value_pct,
+                "_model_prob": model_prob,
+                "_decimal_odds": decimal_odds,
+                "_bookmaker": book,
+                "_kelly_fraction": assessment.kelly_stake_fraction,
+                "_is_value": assessment.is_value_bet,
+                "_is_demo": pred.is_demo,
+            }
+            rows.append(mask_demo_display_fields(row))
     return rows
 
 
